@@ -312,8 +312,8 @@ clear
                 print(Fore.YELLOW + f"[+] Logging messages from {member.name}" + Style.RESET_ALL)
             else:
                 print(Fore.RED + f"[-] Member not found: {username}" + Style.RESET_ALL)
-
-        # ----- STOPLOG (fixed permission + new prompt) -----
+                
+        # ----- STOPLOG-----
         elif main == "stoplog":
             if not guild:
                 print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
@@ -329,13 +329,11 @@ clear
                     print(Fore.RED + "[-] No messages logged for this user." + Style.RESET_ALL)
                     return
 
-                # Create a temporary file (always in temp folder to avoid permission issues)
-                temp_dir = tempfile.gettempdir()
-                filename = os.path.join(temp_dir, f"{member.name}_log.txt")
+                downloads_dir = os.path.join(os.path.expanduser("~"), "Downloads")
+                filename = os.path.join(downloads_dir, f"{member.name}_log.txt")
                 with open(filename, "w", encoding="utf-8") as f:
                     f.write("\n".join(log_data))
 
-                # Discord command: ask to send via DM
                 if ctx_author:
                     answer = await asyncio.to_thread(input, "Want the log sent to your DMs as a txt? (y/n): ")
                     if answer.lower() == "y":
@@ -351,11 +349,11 @@ clear
                         os.remove(filename)
                         print(Fore.YELLOW + "[+] Log discarded." + Style.RESET_ALL)
                 else:
-                    # CMD usage: save locally (already in temp folder)
-                    print(Fore.YELLOW + f"[+] Log saved as {filename}" + Style.RESET_ALL)
+    
+                    print(Fore.YELLOW + f"[+] The log file got saved in Downloads!" + Style.RESET_ALL)
             else:
                 print(Fore.RED + f"[-] User not being logged: {username}" + Style.RESET_ALL)
-
+                
         # ----- TIMEOUT -----
         elif main == "timeout":
             if not guild:
