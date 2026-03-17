@@ -29,7 +29,7 @@ This Project is a open source, self hosting bot. it has lots of features u can e
 
 -- The Bot has a Auto Updater so u dont have to change the FIle manually.
 
--- If the Bot has any Errors, DM s9q9 on Discord.
+-- If the Bot has any Errors, or u have questions DM s9q9 on Discord.
 
 --The Bot is Open Source so u can modify it to ur needs.
 
