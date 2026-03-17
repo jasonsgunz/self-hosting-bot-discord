@@ -3,6 +3,7 @@ from discord.ext import commands
 from colorama import init, Fore, Style
 import os
 import asyncio
+import tempfile
 from difflib import get_close_matches
 
 # ===== TOKEN MANAGEMENT =====
@@ -312,7 +313,7 @@ clear
             else:
                 print(Fore.RED + f"[-] Member not found: {username}" + Style.RESET_ALL)
 
-        # ----- STOPLOG (with DM option) -----
+        # ----- STOPLOG (fixed permission + new prompt) -----
         elif main == "stoplog":
             if not guild:
                 print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
@@ -327,34 +328,31 @@ clear
                 if not log_data:
                     print(Fore.RED + "[-] No messages logged for this user." + Style.RESET_ALL)
                     return
-                # If this is a Discord command (ctx_author exists), offer to send log via DM
+
+                # Create a temporary file (always in temp folder to avoid permission issues)
+                temp_dir = tempfile.gettempdir()
+                filename = os.path.join(temp_dir, f"{member.name}_log.txt")
+                with open(filename, "w", encoding="utf-8") as f:
+                    f.write("\n".join(log_data))
+
+                # Discord command: ask to send via DM
                 if ctx_author:
-                    answer = await asyncio.to_thread(input, "Wanna send the log to your DMs? (y/n): ")
+                    answer = await asyncio.to_thread(input, "Want the log sent to your DMs as a txt? (y/n): ")
                     if answer.lower() == "y":
-                        # Create temporary log file
-                        filename = f"{member.name}_log.txt"
-                        with open(filename, "w", encoding="utf-8") as f:
-                            f.write("\n".join(log_data))
                         try:
                             with open(filename, "rb") as f:
-                                await ctx_author.send(file=discord.File(f, filename))
+                                await ctx_author.send(file=discord.File(f, f"{member.name}_log.txt"))
                             print(Fore.YELLOW + f"[+] Log sent to {ctx_author} via DM." + Style.RESET_ALL)
                         except Exception as e:
                             print(Fore.RED + f"[-] Failed to send DM: {e}" + Style.RESET_ALL)
                         finally:
-                            os.remove(filename)  # Clean up temp file
+                            os.remove(filename)
                     else:
+                        os.remove(filename)
                         print(Fore.YELLOW + "[+] Log discarded." + Style.RESET_ALL)
                 else:
-                    # CMD usage: ask to save locally
-                    answer = await asyncio.to_thread(input, "Wanna save the log as txt? (y/n): ")
-                    if answer.lower() == "y":
-                        filename = f"{member.name}_log.txt"
-                        with open(filename, "w", encoding="utf-8") as f:
-                            f.write("\n".join(log_data))
-                        print(Fore.YELLOW + f"[+] Log saved as {filename}" + Style.RESET_ALL)
-                    else:
-                        print(Fore.YELLOW + "[+] Log discarded." + Style.RESET_ALL)
+                    # CMD usage: save locally (already in temp folder)
+                    print(Fore.YELLOW + f"[+] Log saved as {filename}" + Style.RESET_ALL)
             else:
                 print(Fore.RED + f"[-] User not being logged: {username}" + Style.RESET_ALL)
 
