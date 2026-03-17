@@ -6,8 +6,7 @@ import asyncio
 from difflib import get_close_matches
 
 # ===== TOKEN MANAGEMENT =====
-TOKEN_FILE = os.path.join(os.path.dirname(__file__), "token.txt")   # <-- ONLY CHANGE
-
+TOKEN_FILE = os.path.join(os.path.dirname(__file__), "token.txt")
 async def validate_token(token):
     """Test if a token works by attempting a short-lived login."""
     try:
