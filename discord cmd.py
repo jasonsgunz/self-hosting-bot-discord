@@ -84,7 +84,7 @@ intents.message_content = True
 intents.dm_messages = True
 bot = commands.Bot(command_prefix=PREFIX, intents=intents)
 
-log_targets = {}          # member.id : list of logs (global)
+_targets = {}          # member.id : list of s (global)
 timeout_targets = {}      # guild.id : set of member ids in timeout
 
 cmd_guild = None          # separate guild for CMD interface
@@ -330,17 +330,37 @@ clear
                 if not log_data:
                     print(Fore.RED + "[-] No messages logged for this user." + Style.RESET_ALL)
                     return
-                answer = await asyncio.to_thread(input, "Wanna save the log as txt? (y/n): ")
-                if answer.lower() == "y":
-                    filename = f"{member.name}_log.txt"
-                    with open(filename, "w", encoding="utf-8") as f:
-                        f.write("\n".join(log_data))
-                    print(Fore.YELLOW + f"[+] Log saved as {filename}" + Style.RESET_ALL)
+                # If this is a Discord command (ctx_author exists), offer to send log via DM
+                if ctx_author:
+                    answer = await asyncio.to_thread(input, "Wanna send the log to your DMs? (y/n): ")
+                    if answer.lower() == "y":
+                        # Create temporary log file
+                        filename = f"{member.name}_log.txt"
+                        with open(filename, "w", encoding="utf-8") as f:
+                            f.write("\n".join(log_data))
+                        try:
+                            with open(filename, "rb") as f:
+                                await ctx_author.send(file=discord.File(f, filename))
+                            print(Fore.YELLOW + f"[+] Log sent to {ctx_author} via DM." + Style.RESET_ALL)
+                        except Exception as e:
+                            print(Fore.RED + f"[-] Failed to send DM: {e}" + Style.RESET_ALL)
+                        finally:
+                            os.remove(filename)  # Clean up temp file
+                    else:
+                        print(Fore.YELLOW + "[+] Log discarded." + Style.RESET_ALL)
                 else:
-                    print(Fore.YELLOW + "[+] Log discarded." + Style.RESET_ALL)
+                    # CMD usage: ask to save locally
+                    answer = await asyncio.to_thread(input, "Wanna save the log as txt? (y/n): ")
+                    if answer.lower() == "y":
+                        filename = f"{member.name}_log.txt"
+                        with open(filename, "w", encoding="utf-8") as f:
+                            f.write("\n".join(log_data))
+                        print(Fore.YELLOW + f"[+] Log saved as {filename}" + Style.RESET_ALL)
+                    else:
+                        print(Fore.YELLOW + "[+] Log discarded." + Style.RESET_ALL)
             else:
                 print(Fore.RED + f"[-] User not being logged: {username}" + Style.RESET_ALL)
-
+                
         # ----- TIMEOUT -----
         elif main == "timeout":
             if not guild:
