@@ -7,6 +7,7 @@ from difflib import get_close_matches
 
 # ===== TOKEN MANAGEMENT =====
 TOKEN_FILE = os.path.join(os.path.dirname(__file__), "token.txt")
+
 async def validate_token(token):
     """Test if a token works by attempting a short-lived login."""
     try:
@@ -17,7 +18,6 @@ async def validate_token(token):
     except discord.LoginFailure:
         return False
     except Exception as e:
-        # Catch network errors etc.
         print(Fore.RED + f"[-] Could not validate token: {e}" + Style.RESET_ALL)
         return False
 
@@ -47,7 +47,6 @@ def get_valid_token():
         try:
             valid = asyncio.run(validate_token(token))
         except RuntimeError:
-            # Fallback if asyncio.run fails (shouldn't happen)
             print(Fore.RED + "[-] Validation error, please try again." + Style.RESET_ALL)
             continue
         if valid:
@@ -57,13 +56,11 @@ def get_valid_token():
         else:
             print(Fore.RED + "[-] Invalid token. Please re-enter." + Style.RESET_ALL)
 
-# ===== CONFIG =====
 # Load or prompt for token
 TOKEN = load_token()
 if TOKEN is None:
     TOKEN = get_valid_token()
 else:
-    # Validate existing token
     print("Validating saved token...")
     try:
         valid = asyncio.run(validate_token(TOKEN))
@@ -71,7 +68,7 @@ else:
         valid = False
     if not valid:
         print(Fore.RED + "[-] Saved token is invalid or expired." + Style.RESET_ALL)
-        os.remove(TOKEN_FILE)  # Delete bad token file
+        os.remove(TOKEN_FILE)
         TOKEN = get_valid_token()
     else:
         print(Fore.GREEN + "[+] Saved token is valid." + Style.RESET_ALL)
@@ -84,7 +81,7 @@ intents.message_content = True
 intents.dm_messages = True
 bot = commands.Bot(command_prefix=PREFIX, intents=intents)
 
-_targets = {}          # member.id : list of s (global)
+log_targets = {}          # member.id : list of logs (global)
 timeout_targets = {}      # guild.id : set of member ids in timeout
 
 cmd_guild = None          # separate guild for CMD interface
@@ -315,7 +312,7 @@ clear
             else:
                 print(Fore.RED + f"[-] Member not found: {username}" + Style.RESET_ALL)
 
-        # ----- STOPLOG -----
+        # ----- STOPLOG (with DM option) -----
         elif main == "stoplog":
             if not guild:
                 print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
@@ -360,7 +357,7 @@ clear
                         print(Fore.YELLOW + "[+] Log discarded." + Style.RESET_ALL)
             else:
                 print(Fore.RED + f"[-] User not being logged: {username}" + Style.RESET_ALL)
-                
+
         # ----- TIMEOUT -----
         elif main == "timeout":
             if not guild:
@@ -372,7 +369,6 @@ clear
             username = parts[1]
             member = get_member_by_name_or_closest(guild, username)
             if member:
-                # Add to per-guild timeout set
                 timeout_targets.setdefault(guild.id, set()).add(member.id)
                 print(Fore.YELLOW + f"[+] {member.name} is now timed out in this server (messages will be deleted)." + Style.RESET_ALL)
             else:
@@ -391,7 +387,6 @@ clear
             if member:
                 if guild.id in timeout_targets and member.id in timeout_targets[guild.id]:
                     timeout_targets[guild.id].remove(member.id)
-                    # Clean up empty set
                     if not timeout_targets[guild.id]:
                         del timeout_targets[guild.id]
                     print(Fore.YELLOW + f"[+] {member.name} is no longer timed out in this server." + Style.RESET_ALL)
