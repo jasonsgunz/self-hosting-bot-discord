@@ -5,8 +5,9 @@ import os
 import asyncio
 import tempfile
 from difflib import get_close_matches
+import time
+from collections import defaultdict
 
-# ===== TOKEN MANAGEMENT =====
 TOKEN_FILE = os.path.join(os.path.dirname(__file__), "token.txt")
 
 async def validate_token(token):
@@ -69,7 +70,6 @@ else:
     else:
         print(Fore.GREEN + "[+] Saved token is valid." + Style.RESET_ALL)
 
-# ===== BOT SETUP =====
 PREFIX = "!"
 intents = discord.Intents.default()
 intents.members = True
@@ -80,39 +80,79 @@ bot = commands.Bot(command_prefix=PREFIX, intents=intents)
 log_targets = {}
 timeout_targets = {}
 cmd_guild = None
+member_cache = {}
+cache_timestamp = 0
+CACHE_DURATION = 60
 
-# ===== Utility Functions =====
+class RateLimiter:
+    def __init__(self, initial_concurrency=10):
+        self.concurrency = initial_concurrency
+        self.max_concurrency = 50
+        self.min_concurrency = 1
+        self.backoff_factor = 0.5
+        self.recovery_factor = 1.1
+        self.last_rate_limit = 0
+        self.cooldown = 5
+
+    async def execute(self, tasks, task_func):
+        if not tasks:
+            return []
+        results = []
+        for i in range(0, len(tasks), self.concurrency):
+            batch = tasks[i:i+self.concurrency]
+            try:
+                batch_results = await asyncio.gather(*[task_func(item) for item in batch], return_exceptions=True)
+                for res in batch_results:
+                    if isinstance(res, Exception):
+                        if isinstance(res, discord.HTTPException) and res.status == 429:
+                            self.concurrency = max(self.min_concurrency, int(self.concurrency * self.backoff_factor))
+                            self.last_rate_limit = time.time()
+                            await asyncio.sleep(5)
+                        else:
+                            pass
+                    else:
+                        results.append(res)
+            except Exception as e:
+                print(Fore.RED + f"Batch error: {e}" + Style.RESET_ALL)
+            if time.time() - self.last_rate_limit > self.cooldown and self.concurrency < self.max_concurrency:
+                self.concurrency = min(self.max_concurrency, int(self.concurrency * self.recovery_factor))
+        return results
+
+rate_limiter = RateLimiter()
+
+def refresh_cache(guild):
+    global member_cache, cache_timestamp
+    now = time.time()
+    if now - cache_timestamp > CACHE_DURATION or guild.id not in member_cache:
+        member_cache[guild.id] = {member.name: member for member in guild.members}
+        cache_timestamp = now
+
+def get_member_by_name_or_closest(guild, name):
+    refresh_cache(guild)
+    cache = member_cache.get(guild.id, {})
+    if name in cache:
+        return cache[name]
+    matches = get_close_matches(name, list(cache.keys()), n=1, cutoff=0.1)
+    if matches:
+        return cache[matches[0]]
+    return None
+
 def print_banner():
     os.system("cls")
     print(Fore.GREEN + "===============================")
     print("           BOT PANEL")
     print("===============================" + Style.RESET_ALL)
 
-def get_member_by_name_or_closest(guild, name):
-    for member in guild.members:
-        if member.name == name:
-            return member
-    member_names = [member.name for member in guild.members]
-    matches = get_close_matches(name, member_names, n=1, cutoff=0.1)
-    if matches:
-        for member in guild.members:
-            if member.name == matches[0]:
-                return member
-    return None
-
-# ===== CMD Input Loop =====
 async def cmd_loop():
     global cmd_guild
     await bot.wait_until_ready()
     print_banner()
     await choose_server()
     print(Fore.CYAN + "[INFO] Type 'help' to see available commands" + Style.RESET_ALL)
-
     while True:
         cmd = await asyncio.to_thread(input, Fore.GREEN + "bot> " + Style.RESET_ALL)
         await execute_command(cmd)
 
-# ===== Server Selection Helper =====
 async def choose_server():
     global cmd_guild
     if not bot.guilds:
@@ -134,21 +174,17 @@ async def choose_server():
         except ValueError:
             print(Fore.RED + "[-] Enter a valid number" + Style.RESET_ALL)
 
-# ===== Command Execution =====
 async def execute_command(cmd, ctx_guild=None, ctx_author=None, message_obj=None):
     if ctx_guild:
         guild = ctx_guild
         print(Fore.CYAN + f"[DISCORD COMMAND] {cmd} executed by {ctx_author} in {guild.name}" + Style.RESET_ALL)
     else:
         guild = cmd_guild
-
     try:
         parts = cmd.split()
         if not parts:
             return
         main = parts[0].lower()
-
-        # ----- HELP -----
         if main == "help":
             print(Fore.CYAN + """
 Available commands:
@@ -180,8 +216,6 @@ invitelink
 refreshservers
 clear
             """ + Style.RESET_ALL)
-
-        # ----- LIST CHANNELS -----
         elif main == "listchannels":
             if not guild:
                 print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
@@ -189,8 +223,6 @@ clear
             print(Fore.CYAN + f"\nChannels in {guild.name}:\n" + Style.RESET_ALL)
             for channel in guild.channels:
                 print(f"- {channel.name}")
-
-        # ----- RENAME SERVER -----
         elif main == "renameserver":
             if not guild:
                 print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
@@ -198,8 +230,6 @@ clear
             new_name = " ".join(parts[1:])
             await guild.edit(name=new_name)
             print(Fore.YELLOW + f"[+] Server renamed to: {new_name}" + Style.RESET_ALL)
-
-        # ----- KICK -----
         elif main == "kick":
             if not guild:
                 print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
@@ -209,12 +239,8 @@ clear
                 return
             username = parts[1]
             if username.lower() == "all":
-                for member in guild.members:
-                    if member != bot.user:
-                        try:
-                            await member.kick()
-                        except:
-                            pass
+                members = [m for m in guild.members if m != bot.user]
+                await rate_limiter.execute(members, lambda m: m.kick())
                 print(Fore.YELLOW + "[+] Kicked all members" + Style.RESET_ALL)
             else:
                 member = get_member_by_name_or_closest(guild, username)
@@ -223,8 +249,6 @@ clear
                     print(Fore.YELLOW + f"[+] Kicked {member.name}" + Style.RESET_ALL)
                 else:
                     print(Fore.RED + f"[-] Member not found: {username}" + Style.RESET_ALL)
-
-        # ----- BAN -----
         elif main == "ban":
             if not guild:
                 print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
@@ -234,12 +258,8 @@ clear
                 return
             username = parts[1]
             if username.lower() == "all":
-                for member in guild.members:
-                    if member != bot.user:
-                        try:
-                            await member.ban()
-                        except:
-                            pass
+                members = [m for m in guild.members if m != bot.user]
+                await rate_limiter.execute(members, lambda m: m.ban())
                 print(Fore.YELLOW + "[+] Banned all members" + Style.RESET_ALL)
             else:
                 member = get_member_by_name_or_closest(guild, username)
@@ -248,8 +268,6 @@ clear
                     print(Fore.YELLOW + f"[+] Banned {member.name}" + Style.RESET_ALL)
                 else:
                     print(Fore.RED + f"[-] Member not found: {username}" + Style.RESET_ALL)
-
-        # ----- UNBAN -----
         elif main == "unban":
             if not guild:
                 print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
@@ -269,8 +287,6 @@ clear
                     print(Fore.YELLOW + f"[+] Unbanned {ban_entry.user}" + Style.RESET_ALL)
                     return
             print(Fore.RED + "[-] User not found in ban list." + Style.RESET_ALL)
-
-        # ----- DM -----
         elif main == "dm":
             if not guild:
                 print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
@@ -281,12 +297,8 @@ clear
             username = parts[1]
             message = " ".join(parts[2:])
             if username.lower() == "all":
-                for member in guild.members:
-                    if member != bot.user:
-                        try:
-                            await member.send(message)
-                        except:
-                            pass
+                members = [m for m in guild.members if m != bot.user]
+                await rate_limiter.execute(members, lambda m: m.send(message))
                 print(Fore.YELLOW + "[+] DM sent to all members" + Style.RESET_ALL)
             else:
                 member = get_member_by_name_or_closest(guild, username)
@@ -295,8 +307,6 @@ clear
                     print(Fore.YELLOW + f"[+] DM sent to {member.name}" + Style.RESET_ALL)
                 else:
                     print(Fore.RED + f"[-] Member not found: {username}" + Style.RESET_ALL)
-
-        # ----- LOG -----
         elif main == "log":
             if not guild:
                 print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
@@ -311,8 +321,6 @@ clear
                 print(Fore.YELLOW + f"[+] Logging messages from {member.name}" + Style.RESET_ALL)
             else:
                 print(Fore.RED + f"[-] Member not found: {username}" + Style.RESET_ALL)
-
-        # ----- STOPLOG -----
         elif main == "stoplog":
             if not guild:
                 print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
@@ -327,12 +335,10 @@ clear
                 if not log_data:
                     print(Fore.RED + "[-] No messages logged for this user." + Style.RESET_ALL)
                     return
-
                 downloads_dir = os.path.join(os.path.expanduser("~"), "Downloads")
                 filename = os.path.join(downloads_dir, f"{member.name}_log.txt")
                 with open(filename, "w", encoding="utf-8") as f:
                     f.write("\n".join(log_data))
-
                 if ctx_author:
                     answer = await asyncio.to_thread(input, "Want the log sent to your DMs as a txt? (y/n): ")
                     if answer.lower() == "y":
@@ -351,8 +357,6 @@ clear
                     print(Fore.YELLOW + f"[+] The log file got saved in Downloads!" + Style.RESET_ALL)
             else:
                 print(Fore.RED + f"[-] User not being logged: {username}" + Style.RESET_ALL)
-
-        # ----- TIMEOUT -----
         elif main == "timeout":
             if not guild:
                 print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
@@ -367,8 +371,6 @@ clear
                 print(Fore.YELLOW + f"[+] {member.name} is now timed out in this server (messages will be deleted)." + Style.RESET_ALL)
             else:
                 print(Fore.RED + f"[-] Member not found: {username}" + Style.RESET_ALL)
-
-        # ----- UNTIMEOUT -----
         elif main == "untimeout":
             if not guild:
                 print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
@@ -388,8 +390,6 @@ clear
                     print(Fore.RED + f"[-] {member.name} is not timed out in this server." + Style.RESET_ALL)
             else:
                 print(Fore.RED + f"[-] Member not found: {username}" + Style.RESET_ALL)
-
-        # ----- NICKNAME -----
         elif main == "nickname":
             if not guild:
                 print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
@@ -408,8 +408,6 @@ clear
                     print(Fore.RED + f"[-] Failed to change nickname: {e}" + Style.RESET_ALL)
             else:
                 print(Fore.RED + f"[-] Member not found: {username}" + Style.RESET_ALL)
-
-        # ----- NICKNAMEALL -----
         elif main == "nicknameall":
             if not guild:
                 print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
@@ -418,20 +416,13 @@ clear
                 print(Fore.RED + "[-] Usage: nicknameall <new_nick>" + Style.RESET_ALL)
                 return
             new_nick = " ".join(parts[1:])
-            for member in guild.members:
-                if member != bot.user:
-                    try:
-                        await member.edit(nick=new_nick)
-                    except:
-                        pass
+            members = [m for m in guild.members if m != bot.user]
+            await rate_limiter.execute(members, lambda m: m.edit(nick=new_nick))
             print(Fore.YELLOW + f"[+] Changed nickname of all members to {new_nick}" + Style.RESET_ALL)
-
-        # ----- LOCKDOWN -----
         elif main == "lockdown":
             if not guild:
                 print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
                 return
-            # Determine channel: if specified, use it; otherwise use current channel (if command from Discord) or ask?
             if len(parts) >= 2:
                 channel_name = parts[1]
                 channel = discord.utils.get(guild.text_channels, name=channel_name)
@@ -451,8 +442,6 @@ clear
                 print(Fore.YELLOW + f"[+] Locked down {channel.name}" + Style.RESET_ALL)
             except Exception as e:
                 print(Fore.RED + f"[-] Failed to lock channel: {e}" + Style.RESET_ALL)
-
-        # ----- UNLOCK -----
         elif main == "unlock":
             if not guild:
                 print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
@@ -470,14 +459,12 @@ clear
                 print(Fore.RED + f"[-] Channel not found: {channel_name}" + Style.RESET_ALL)
                 return
             overwrite = channel.overwrites_for(guild.default_role)
-            overwrite.send_messages = None  # reset to default
+            overwrite.send_messages = None
             try:
                 await channel.set_permissions(guild.default_role, overwrite=overwrite)
                 print(Fore.YELLOW + f"[+] Unlocked {channel.name}" + Style.RESET_ALL)
             except Exception as e:
                 print(Fore.RED + f"[-] Failed to unlock channel: {e}" + Style.RESET_ALL)
-
-        # ----- THEDESTROYER -----
         elif main == "thedestroyer":
             if not guild:
                 print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
@@ -491,63 +478,35 @@ clear
             if not channel:
                 print(Fore.RED + f"[-] Channel not found: {channel_name}" + Style.RESET_ALL)
                 return
-
-            # Send the warning message
             warning_text = "DONT REACT OR ELSE..."
             sent = await channel.send(warning_text)
-            # Add warning reaction (⚠️)
             await sent.add_reaction("⚠️")
-
             print(Fore.YELLOW + "[+] The Destroyer trap set. Waiting for a reaction..." + Style.RESET_ALL)
-
             async def destroy_trigger():
                 try:
-                    # Wait for any reaction from any user (excluding bot)
                     def check(reaction, user):
                         return user != bot.user and reaction.message.id == sent.id
-
                     reaction, user = await bot.wait_for('reaction_add', timeout=None, check=check)
                     print(Fore.RED + f"[!] Reaction detected from {user}! Initiating destruction..." + Style.RESET_ALL)
-
-                    # Delete all channels
-                    for ch in guild.channels:
-                        try:
-                            await ch.delete()
-                        except:
-                            pass
-
-                    # Delete all roles except @everyone
+                    await rate_limiter.execute(guild.channels, lambda ch: ch.delete())
                     for role in guild.roles:
                         if role.name != "@everyone" and role < guild.me.top_role:
                             try:
                                 await role.delete()
                             except:
                                 pass
-
-                    # Create new channel "oops"
                     new_channel = await guild.create_text_channel("oops")
                     await new_channel.send(f"@everyone {message_content}")
                     print(Fore.CYAN + "[+] Destruction complete. Created #oops with your message." + Style.RESET_ALL)
-
                 except Exception as e:
                     print(Fore.RED + f"[-] Destroyer error: {e}" + Style.RESET_ALL)
-
-            # Run the destroyer in the background so the command doesn't hang
             asyncio.create_task(destroy_trigger())
-
-        # ----- DELETE ALL CHANNELS -----
         elif main == "deleteallchannels":
             if not guild:
                 print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
                 return
-            for channel in guild.channels:
-                try:
-                    await channel.delete()
-                    print(Fore.YELLOW + f"[+] Deleted {channel.name}" + Style.RESET_ALL)
-                except:
-                    pass
-
-        # ----- RENAME ALL CHANNELS -----
+            await rate_limiter.execute(guild.channels, lambda ch: ch.delete())
+            print(Fore.YELLOW + "[+] Deleted all channels" + Style.RESET_ALL)
         elif main == "renameallchannels":
             if not guild:
                 print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
@@ -556,14 +515,8 @@ clear
                 print(Fore.RED + "[-] Usage: renameallchannels <newname>" + Style.RESET_ALL)
                 return
             new_name = " ".join(parts[1:])
-            for channel in guild.channels:
-                try:
-                    await channel.edit(name=new_name)
-                    print(Fore.YELLOW + f"[+] Renamed {channel.name} to {new_name}" + Style.RESET_ALL)
-                except:
-                    pass
-
-        # ----- MESSAGE ALL -----
+            await rate_limiter.execute(guild.channels, lambda ch: ch.edit(name=new_name))
+            print(Fore.YELLOW + f"[+] Renamed all channels to {new_name}" + Style.RESET_ALL)
         elif main == "messageall":
             if not guild:
                 print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
@@ -572,14 +525,8 @@ clear
                 print(Fore.RED + "[-] Usage: messageall <message>" + Style.RESET_ALL)
                 return
             message = " ".join(parts[1:])
-            for channel in guild.text_channels:
-                try:
-                    await channel.send(message)
-                except:
-                    pass
+            await rate_limiter.execute(guild.text_channels, lambda ch: ch.send(message))
             print(Fore.YELLOW + f"[+] Messageall executed in {guild.name}" + Style.RESET_ALL)
-
-        # ----- EVERYONE -----
         elif main == "everyone":
             if not guild:
                 print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
@@ -595,8 +542,6 @@ clear
                 print(Fore.YELLOW + f"[+] Sent @everyone in {channel_name}" + Style.RESET_ALL)
             else:
                 print(Fore.RED + f"[-] Channel not found: {channel_name}" + Style.RESET_ALL)
-
-        # ----- BUTTON URL -----
         elif main == "buttonurl":
             if not guild:
                 print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
@@ -606,20 +551,16 @@ clear
                 return
             channel_name = parts[1]
             url = parts[2]
-
             class LinkButton(discord.ui.View):
                 def __init__(self):
                     super().__init__()
                     self.add_item(discord.ui.Button(label="Open Link", url=url))
-
             channel = discord.utils.get(guild.text_channels, name=channel_name)
             if channel:
                 await channel.send("Click the button:", view=LinkButton())
                 print(Fore.YELLOW + f"[+] Button sent in {channel_name}" + Style.RESET_ALL)
             else:
                 print(Fore.RED + f"[-] Channel not found: {channel_name}" + Style.RESET_ALL)
-
-        # ----- DELETE SPECIFIC MESSAGES -----
         elif main == "deletespecificmessages":
             if not guild:
                 print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
@@ -631,15 +572,12 @@ clear
             channel_name = parts[2]
             channel = discord.utils.get(guild.text_channels, name=channel_name)
             if channel:
-                async for message in channel.history(limit=None):
-                    if keyword in message.content:
-                        try:
-                            await message.delete()
-                        except:
-                            pass
+                messages = []
+                async for msg in channel.history(limit=None):
+                    if keyword in msg.content:
+                        messages.append(msg)
+                await rate_limiter.execute(messages, lambda m: m.delete())
                 print(Fore.GREEN + f"[+] Finished deleting messages with keyword '{keyword}' in {channel_name}" + Style.RESET_ALL)
-
-        # ----- DELETE ALL CHANNEL MESSAGES -----
         elif main == "deleteallchannelmessages":
             if not guild:
                 print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
@@ -655,14 +593,11 @@ clear
             if not channel:
                 print(Fore.RED + "[-] Channel not found!" + Style.RESET_ALL)
                 return
+            messages = []
             async for msg in channel.history(limit=None):
-                try:
-                    await msg.delete()
-                except:
-                    pass
+                messages.append(msg)
+            await rate_limiter.execute(messages, lambda m: m.delete())
             print(Fore.YELLOW + f"[+] Deleted all messages in {channel.name}" + Style.RESET_ALL)
-
-        # ----- CREATE CHANNEL -----
         elif main == "createchannel":
             if not guild:
                 print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
@@ -682,15 +617,12 @@ clear
                 print(Fore.RED + "[-] Amount must be at least 1." + Style.RESET_ALL)
                 return
             print(Fore.CYAN + f"[INFO] Creating {amount} channel(s)..." + Style.RESET_ALL)
+            tasks = []
             for i in range(1, amount + 1):
-                try:
-                    channel_name = f"{name}-{i}" if amount > 1 else name
-                    await guild.create_text_channel(channel_name)
-                    print(Fore.GREEN + f"[+] Created channel: {channel_name}" + Style.RESET_ALL)
-                except Exception as e:
-                    print(Fore.RED + f"[-] Failed creating {name}-{i}: {e}" + Style.RESET_ALL)
-
-        # ----- INVITE LINK -----
+                channel_name = f"{name}-{i}" if amount > 1 else name
+                tasks.append(guild.create_text_channel(channel_name))
+            await asyncio.gather(*tasks)
+            print(Fore.GREEN + f"[+] Created {amount} channel(s)" + Style.RESET_ALL)
         elif main == "invitelink":
             if not guild:
                 print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
@@ -705,8 +637,6 @@ clear
                 return
             invite = await channel.create_invite(max_age=0, max_uses=0)
             print(Fore.GREEN + f"[+] Invite link: {invite}" + Style.RESET_ALL)
-
-        # ----- BOMB -----
         elif main == "bomb":
             if not guild:
                 print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
@@ -725,54 +655,41 @@ clear
             if confirm.lower() != "y":
                 print(Fore.YELLOW + "[+] Bomb cancelled." + Style.RESET_ALL)
                 return
-            for channel in guild.channels:
-                try:
-                    await channel.delete()
-                except:
-                    pass
+            await rate_limiter.execute(guild.channels, lambda ch: ch.delete())
+            tasks = []
             for i in range(1, channel_count + 1):
-                new_channel = await guild.create_text_channel(f"{base_name}-{i}")
-                await new_channel.send(message)
+                tasks.append(guild.create_text_channel(f"{base_name}-{i}"))
+            new_channels = await asyncio.gather(*tasks)
+            await rate_limiter.execute(new_channels, lambda ch: ch.send(message))
             print(Fore.CYAN + "[+] Bomb completed successfully!" + Style.RESET_ALL)
-
-        # ----- REFRESH SERVERS -----
         elif main == "refreshservers":
             await choose_server()
-
-        # ----- CLEAR -----
         elif main == "clear":
             print_banner()
-
         else:
             print(Fore.RED + "Unknown command. Type 'help'." + Style.RESET_ALL)
-
     except Exception as e:
         print(Fore.RED + f"Error: {e}" + Style.RESET_ALL)
 
-# ===== Discord Events =====
 @bot.event
 async def on_message(message):
     if message.author == bot.user:
         return
-
     if message.author.id in log_targets:
         channel_name = "DM" if isinstance(message.channel, discord.DMChannel) else message.channel.name
         log_entry = f"[{channel_name}] {message.author}: {message.content}"
         log_targets[message.author.id].append(log_entry)
         print(Fore.MAGENTA + log_entry + Style.RESET_ALL)
-
     if message.guild and message.author.id in timeout_targets.get(message.guild.id, set()):
         try:
             await message.delete()
             print(Fore.RED + f"[TIMEOUT] Deleted message from {message.author} in {message.guild.name}: {message.content}" + Style.RESET_ALL)
         except:
             pass
-
     if message.content.startswith(PREFIX):
         if not message.guild:
             print(Fore.RED + "[-] Commands are not supported in DMs." + Style.RESET_ALL)
             return
-
         command_text = message.content[len(PREFIX):]
         try:
             await execute_command(command_text, message.guild, message.author, message_obj=message)
@@ -784,13 +701,10 @@ async def on_message(message):
             except:
                 pass
         return
-
     await bot.process_commands(message)
 
-# ===== Setup Hook =====
 @bot.event
 async def setup_hook():
     bot.loop.create_task(cmd_loop())
 
-# ===== Start Bot =====
 bot.run(TOKEN)
