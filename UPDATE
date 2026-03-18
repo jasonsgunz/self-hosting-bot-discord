@@ -1,0 +1,7 @@
+# UPDATE
+
+- made the bot faster
+
+- smart rate limit handling
+
+- caches member look ups for faster looking
