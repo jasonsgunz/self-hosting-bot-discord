@@ -10,7 +10,6 @@ from difflib import get_close_matches
 TOKEN_FILE = os.path.join(os.path.dirname(__file__), "token.txt")
 
 async def validate_token(token):
-    """Test if a token works by attempting a short-lived login."""
     try:
         client = discord.Client(intents=discord.Intents.default())
         await client.login(token)
@@ -23,7 +22,6 @@ async def validate_token(token):
         return False
 
 def load_token():
-    """Read token from file, return None if file missing/empty."""
     if os.path.exists(TOKEN_FILE):
         with open(TOKEN_FILE, "r") as f:
             token = f.read().strip()
@@ -32,12 +30,10 @@ def load_token():
     return None
 
 def save_token(token):
-    """Write token to file."""
     with open(TOKEN_FILE, "w") as f:
         f.write(token)
 
 def get_valid_token():
-    """Prompt user until a valid token is entered, save it."""
     print(Fore.CYAN + "=== Bot Token Setup ===" + Style.RESET_ALL)
     while True:
         token = input("Enter your bot token: ").strip()
@@ -57,7 +53,6 @@ def get_valid_token():
         else:
             print(Fore.RED + "[-] Invalid token. Please re-enter." + Style.RESET_ALL)
 
-# Load or prompt for token
 TOKEN = load_token()
 if TOKEN is None:
     TOKEN = get_valid_token()
@@ -82,10 +77,9 @@ intents.message_content = True
 intents.dm_messages = True
 bot = commands.Bot(command_prefix=PREFIX, intents=intents)
 
-log_targets = {}          # member.id : list of logs (global)
-timeout_targets = {}      # guild.id : set of member ids in timeout
-
-cmd_guild = None          # separate guild for CMD interface
+log_targets = {}
+timeout_targets = {}
+cmd_guild = None
 
 # ===== Utility Functions =====
 def print_banner():
@@ -166,6 +160,11 @@ log <username>
 stoplog <username>
 timeout <username>
 untimeout <username>
+nickname <username> <new_nick>
+nicknameall <new_nick>
+lockdown [channel]
+unlock [channel]
+thedestroyer <channel> <message>
 listchannels
 renameserver <new_name>
 deleteallchannels
@@ -312,8 +311,8 @@ clear
                 print(Fore.YELLOW + f"[+] Logging messages from {member.name}" + Style.RESET_ALL)
             else:
                 print(Fore.RED + f"[-] Member not found: {username}" + Style.RESET_ALL)
-                
-        # ----- STOPLOG-----
+
+        # ----- STOPLOG -----
         elif main == "stoplog":
             if not guild:
                 print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
@@ -349,11 +348,10 @@ clear
                         os.remove(filename)
                         print(Fore.YELLOW + "[+] Log discarded." + Style.RESET_ALL)
                 else:
-    
                     print(Fore.YELLOW + f"[+] The log file got saved in Downloads!" + Style.RESET_ALL)
             else:
                 print(Fore.RED + f"[-] User not being logged: {username}" + Style.RESET_ALL)
-                
+
         # ----- TIMEOUT -----
         elif main == "timeout":
             if not guild:
@@ -390,6 +388,152 @@ clear
                     print(Fore.RED + f"[-] {member.name} is not timed out in this server." + Style.RESET_ALL)
             else:
                 print(Fore.RED + f"[-] Member not found: {username}" + Style.RESET_ALL)
+
+        # ----- NICKNAME -----
+        elif main == "nickname":
+            if not guild:
+                print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
+                return
+            if len(parts) < 3:
+                print(Fore.RED + "[-] Usage: nickname <username> <new_nick>" + Style.RESET_ALL)
+                return
+            username = parts[1]
+            new_nick = " ".join(parts[2:])
+            member = get_member_by_name_or_closest(guild, username)
+            if member:
+                try:
+                    await member.edit(nick=new_nick)
+                    print(Fore.YELLOW + f"[+] Changed nickname of {member.name} to {new_nick}" + Style.RESET_ALL)
+                except Exception as e:
+                    print(Fore.RED + f"[-] Failed to change nickname: {e}" + Style.RESET_ALL)
+            else:
+                print(Fore.RED + f"[-] Member not found: {username}" + Style.RESET_ALL)
+
+        # ----- NICKNAMEALL -----
+        elif main == "nicknameall":
+            if not guild:
+                print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
+                return
+            if len(parts) < 2:
+                print(Fore.RED + "[-] Usage: nicknameall <new_nick>" + Style.RESET_ALL)
+                return
+            new_nick = " ".join(parts[1:])
+            for member in guild.members:
+                if member != bot.user:
+                    try:
+                        await member.edit(nick=new_nick)
+                    except:
+                        pass
+            print(Fore.YELLOW + f"[+] Changed nickname of all members to {new_nick}" + Style.RESET_ALL)
+
+        # ----- LOCKDOWN -----
+        elif main == "lockdown":
+            if not guild:
+                print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
+                return
+            # Determine channel: if specified, use it; otherwise use current channel (if command from Discord) or ask?
+            if len(parts) >= 2:
+                channel_name = parts[1]
+                channel = discord.utils.get(guild.text_channels, name=channel_name)
+            else:
+                if message_obj:
+                    channel = message_obj.channel
+                else:
+                    print(Fore.RED + "[-] No channel specified and not in a Discord channel. Usage: lockdown <channel>" + Style.RESET_ALL)
+                    return
+            if not channel:
+                print(Fore.RED + f"[-] Channel not found: {channel_name}" + Style.RESET_ALL)
+                return
+            overwrite = channel.overwrites_for(guild.default_role)
+            overwrite.send_messages = False
+            try:
+                await channel.set_permissions(guild.default_role, overwrite=overwrite)
+                print(Fore.YELLOW + f"[+] Locked down {channel.name}" + Style.RESET_ALL)
+            except Exception as e:
+                print(Fore.RED + f"[-] Failed to lock channel: {e}" + Style.RESET_ALL)
+
+        # ----- UNLOCK -----
+        elif main == "unlock":
+            if not guild:
+                print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
+                return
+            if len(parts) >= 2:
+                channel_name = parts[1]
+                channel = discord.utils.get(guild.text_channels, name=channel_name)
+            else:
+                if message_obj:
+                    channel = message_obj.channel
+                else:
+                    print(Fore.RED + "[-] No channel specified and not in a Discord channel. Usage: unlock <channel>" + Style.RESET_ALL)
+                    return
+            if not channel:
+                print(Fore.RED + f"[-] Channel not found: {channel_name}" + Style.RESET_ALL)
+                return
+            overwrite = channel.overwrites_for(guild.default_role)
+            overwrite.send_messages = None  # reset to default
+            try:
+                await channel.set_permissions(guild.default_role, overwrite=overwrite)
+                print(Fore.YELLOW + f"[+] Unlocked {channel.name}" + Style.RESET_ALL)
+            except Exception as e:
+                print(Fore.RED + f"[-] Failed to unlock channel: {e}" + Style.RESET_ALL)
+
+        # ----- THEDESTROYER -----
+        elif main == "thedestroyer":
+            if not guild:
+                print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
+                return
+            if len(parts) < 3:
+                print(Fore.RED + "[-] Usage: thedestroyer <channel> <message>" + Style.RESET_ALL)
+                return
+            channel_name = parts[1]
+            message_content = " ".join(parts[2:])
+            channel = discord.utils.get(guild.text_channels, name=channel_name)
+            if not channel:
+                print(Fore.RED + f"[-] Channel not found: {channel_name}" + Style.RESET_ALL)
+                return
+
+            # Send the warning message
+            warning_text = "DONT REACT OR ELSE..."
+            sent = await channel.send(warning_text)
+            # Add warning reaction (⚠️)
+            await sent.add_reaction("⚠️")
+
+            print(Fore.YELLOW + "[+] The Destroyer trap set. Waiting for a reaction..." + Style.RESET_ALL)
+
+            async def destroy_trigger():
+                try:
+                    # Wait for any reaction from any user (excluding bot)
+                    def check(reaction, user):
+                        return user != bot.user and reaction.message.id == sent.id
+
+                    reaction, user = await bot.wait_for('reaction_add', timeout=None, check=check)
+                    print(Fore.RED + f"[!] Reaction detected from {user}! Initiating destruction..." + Style.RESET_ALL)
+
+                    # Delete all channels
+                    for ch in guild.channels:
+                        try:
+                            await ch.delete()
+                        except:
+                            pass
+
+                    # Delete all roles except @everyone
+                    for role in guild.roles:
+                        if role.name != "@everyone" and role < guild.me.top_role:
+                            try:
+                                await role.delete()
+                            except:
+                                pass
+
+                    # Create new channel "oops"
+                    new_channel = await guild.create_text_channel("oops")
+                    await new_channel.send(f"@everyone {message_content}")
+                    print(Fore.CYAN + "[+] Destruction complete. Created #oops with your message." + Style.RESET_ALL)
+
+                except Exception as e:
+                    print(Fore.RED + f"[-] Destroyer error: {e}" + Style.RESET_ALL)
+
+            # Run the destroyer in the background so the command doesn't hang
+            asyncio.create_task(destroy_trigger())
 
         # ----- DELETE ALL CHANNELS -----
         elif main == "deleteallchannels":
@@ -611,22 +755,19 @@ async def on_message(message):
     if message.author == bot.user:
         return
 
-    # Log messages if user is being tracked (global)
     if message.author.id in log_targets:
         channel_name = "DM" if isinstance(message.channel, discord.DMChannel) else message.channel.name
         log_entry = f"[{channel_name}] {message.author}: {message.content}"
         log_targets[message.author.id].append(log_entry)
         print(Fore.MAGENTA + log_entry + Style.RESET_ALL)
 
-    # Timeout: delete messages from timed out users in this guild
     if message.guild and message.author.id in timeout_targets.get(message.guild.id, set()):
         try:
             await message.delete()
             print(Fore.RED + f"[TIMEOUT] Deleted message from {message.author} in {message.guild.name}: {message.content}" + Style.RESET_ALL)
         except:
-            pass  # No permission to delete – just ignore
+            pass
 
-    # Handle commands with prefix
     if message.content.startswith(PREFIX):
         if not message.guild:
             print(Fore.RED + "[-] Commands are not supported in DMs." + Style.RESET_ALL)
