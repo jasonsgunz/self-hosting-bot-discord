@@ -1,17 +1,17 @@
-# UPDATE 18.03.2026
+UPDATE 18.03.2026
 
-## Smarter Performance
+Smarter Performance
 
-- **Auto rate limit handling** – The bot detects when Discord is limiting you and automatically adjusts speed to avoid getting blocked
-- **Member caching** – Finds users faster by remembering member names
-- **Parallel processing** – Does multiple things at once instead of waiting
+- Auto rate limit handling – The bot detects when Discord is limiting you and automatically adjusts speed to avoid getting blocked
+- Member caching – Finds users faster by remembering member names
+- Parallel processing – Does multiple things at once instead of waiting
 
-## ✅ Everything Else Stays the Same
+✅ Everything Else Stays the Same
 
 - All commands work exactly as before
 - No new commands to learn
 - No changes to how you use the bot
 
-# NOTE
+NOTE
 
 - Might take more RAM then usual
