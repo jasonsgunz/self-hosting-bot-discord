@@ -214,6 +214,7 @@ createchannel <name> [number]
 bomb <number_of_channels> <channel_base_name> <message>
 invitelink
 refreshservers
+renewtoken
 clear
             """ + Style.RESET_ALL)
         elif main == "listchannels":
@@ -662,6 +663,12 @@ clear
             new_channels = await asyncio.gather(*tasks)
             await rate_limiter.execute(new_channels, lambda ch: ch.send(message))
             print(Fore.CYAN + "[+] Bomb completed successfully!" + Style.RESET_ALL)
+        elif main == "renewtoken":
+            if ctx_author:
+                print(Fore.RED + "[-] This command can only be used in the bot's CMD window." + Style.RESET_ALL)
+                return
+            get_valid_token()
+            print(Fore.YELLOW + "[+] Token updated. Please restart the bot for changes to take effect." + Style.RESET_ALL)
         elif main == "refreshservers":
             await choose_server()
         elif main == "clear":
