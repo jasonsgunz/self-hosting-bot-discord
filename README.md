@@ -9,6 +9,8 @@ This Project is a open source, self hosting bot. it has lots of features u can e
 
 -- Python set to default for running .py files
 
+-- in the python terminal (without any code used in it), paste `pip install discord.py colorama` for the code to work flawlessly
+
 # NOTE
 
 -- Without these steps, u wont get it work so proceed when done.
