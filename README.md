@@ -68,7 +68,10 @@ This Project is a open source, self hosting bot. it has lots of features u can e
 `deleteallchannelmessages [channel]` - Deletes all messages in a channel (current or specified)  
 `refreshservers` - Re-select the current server from the list  
 `clear` - Clears the CMD screen  
-`help` - Shows this command list  
+`help` - Shows this command list
+`startdoom <channel>` starts a ,,doom like" experience u can play using buttons (sadly doesnt work like doom)
+`ping <channel> <minutes>` basically @everyone every timespan u choose in the channel
+`unping` stops pinging
 
 ---
 
