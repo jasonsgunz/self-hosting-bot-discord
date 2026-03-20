@@ -85,7 +85,7 @@ member_cache = {}
 cache_timestamp = 0
 CACHE_DURATION = 60
 active_ping_tasks = {}
-active_doom_games = {}          # channel_id -> {'message_id': int, 'view': DoomView}
+active_doom_games = {}          # channel_id -> DoomGame instance
 
 class RateLimiter:
     def __init__(self, initial_concurrency=10):
@@ -190,90 +190,316 @@ async def ping_loop(channel, minutes):
     except asyncio.CancelledError:
         pass
 
-# --- Doom Game ---
-GRID_SIZE = 32  # 32x32 fits in Discord message (1024 chars)
+# --- Enhanced Doom Game ---
+GRID_SIZE = 24   # smaller grid so entire game fits in one message
+WALL = '▪'       # small black square
+FLOOR = '▫'      # small white square
+PLAYER = '🟢'
+ENEMY = '🔴'
+AMMO = '🔫'
+HEALTH = '❤️'
 
-def generate_doom_grid():
-    """Create a 32x32 grid with walls (#) and empty (.) and player (P) at (1,1)"""
-    grid = [['.' for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
-    # Outer walls
-    for x in range(GRID_SIZE):
-        grid[0][x] = '#'
-        grid[GRID_SIZE-1][x] = '#'
-    for y in range(GRID_SIZE):
-        grid[y][0] = '#'
-        grid[y][GRID_SIZE-1] = '#'
-    # Random obstacles (15% of interior)
-    for y in range(2, GRID_SIZE-2):
-        for x in range(2, GRID_SIZE-2):
-            if random.random() < 0.15 and not (x == 1 and y == 1):
-                grid[y][x] = '#'
-    # Ensure start is empty
-    grid[1][1] = '.'
-    # Place player
-    grid[1][1] = 'P'
-    return grid, (1,1)
+class DoomGame:
+    def __init__(self, channel_id):
+        self.channel_id = channel_id
+        self.grid = []
+        self.player_pos = None
+        self.enemies = []       # list of (x, y)
+        self.ammo_pickups = []  # list of (x, y)
+        self.health_pickups = [] # list of (x, y)
+        self.player_health = 100
+        self.player_ammo = 10
+        self.score = 0
+        self.facing = 'right'   # last move direction
+        self.message = None      # the message object for editing
+        self.view = None         # the view attached to the message
 
-def render_doom_grid(grid):
-    rows = []
-    for y in range(GRID_SIZE):
-        row = []
-        for x in range(GRID_SIZE):
-            cell = grid[y][x]
-            if cell == '#':
-                row.append('⬛')
-            elif cell == '.':
-                row.append('⬜')
-            elif cell == 'P':
-                row.append('🟢')
-        rows.append(''.join(row))
-    return '\n'.join(rows)
+        # Build maze
+        self.generate_maze()
+
+    def generate_maze(self):
+        # Initialize all walls
+        self.grid = [[WALL for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
+        # Carve simple passages using recursive backtracking (makes sure all cells reachable)
+        # Start at (1,1) which will be player start
+        stack = [(1,1)]
+        self.grid[1][1] = FLOOR
+        while stack:
+            x, y = stack[-1]
+            # find unvisited neighbors two steps away
+            neighbors = []
+            for dx, dy in [(2,0), (-2,0), (0,2), (0,-2)]:
+                nx, ny = x+dx, y+dy
+                if 0 < nx < GRID_SIZE-1 and 0 < ny < GRID_SIZE-1 and self.grid[ny][nx] == WALL:
+                    # if that cell is wall, we can carve
+                    neighbors.append((nx, ny, dx//2, dy//2))
+            if neighbors:
+                nx, ny, cx, cy = random.choice(neighbors)
+                # carve path
+                self.grid[ny][nx] = FLOOR
+                self.grid[y+cy][x+cx] = FLOOR
+                stack.append((nx, ny))
+            else:
+                stack.pop()
+        # Add extra random open spaces for variety
+        for _ in range(GRID_SIZE * 2):
+            x = random.randint(1, GRID_SIZE-2)
+            y = random.randint(1, GRID_SIZE-2)
+            self.grid[y][x] = FLOOR
+        # Place player at (1,1)
+        self.player_pos = (1,1)
+        self.grid[1][1] = PLAYER
+        # Place enemies (5-8)
+        num_enemies = random.randint(5, 8)
+        for _ in range(num_enemies):
+            while True:
+                x = random.randint(1, GRID_SIZE-2)
+                y = random.randint(1, GRID_SIZE-2)
+                if (x,y) != self.player_pos and self.grid[y][x] == FLOOR:
+                    self.grid[y][x] = ENEMY
+                    self.enemies.append((x,y))
+                    break
+        # Place ammo pickups (3-5)
+        num_ammo = random.randint(3,5)
+        for _ in range(num_ammo):
+            while True:
+                x = random.randint(1, GRID_SIZE-2)
+                y = random.randint(1, GRID_SIZE-2)
+                if (x,y) != self.player_pos and self.grid[y][x] == FLOOR and (x,y) not in self.enemies:
+                    self.ammo_pickups.append((x,y))
+                    break
+        # Place health pickups (2-3)
+        num_health = random.randint(2,3)
+        for _ in range(num_health):
+            while True:
+                x = random.randint(1, GRID_SIZE-2)
+                y = random.randint(1, GRID_SIZE-2)
+                if (x,y) != self.player_pos and self.grid[y][x] == FLOOR and (x,y) not in self.enemies and (x,y) not in self.ammo_pickups:
+                    self.health_pickups.append((x,y))
+                    break
+
+    def render(self):
+        rows = []
+        for y in range(GRID_SIZE):
+            row = []
+            for x in range(GRID_SIZE):
+                if (x,y) == self.player_pos:
+                    row.append(PLAYER)
+                elif (x,y) in self.enemies:
+                    row.append(ENEMY)
+                elif (x,y) in self.ammo_pickups:
+                    row.append(AMMO)
+                elif (x,y) in self.health_pickups:
+                    row.append(HEALTH)
+                else:
+                    row.append(self.grid[y][x])
+            rows.append(''.join(row))
+        map_str = '\n'.join(rows)
+        stats = f"❤️ {self.player_health}  🔫 {self.player_ammo}  🎯 {self.score}  🧭 {self.facing}"
+        return f"{stats}\n{map_str}"
+
+    def move_player(self, dx, dy):
+        x, y = self.player_pos
+        nx, ny = x+dx, y+dy
+        if not (0 <= nx < GRID_SIZE and 0 <= ny < GRID_SIZE):
+            return False
+        # Update facing
+        if dx != 0:
+            self.facing = 'right' if dx > 0 else 'left'
+        elif dy != 0:
+            self.facing = 'down' if dy > 0 else 'up'
+        # Check if it's a wall
+        if self.grid[ny][nx] == WALL:
+            return False
+        # Check if enemy
+        if (nx, ny) in self.enemies:
+            # Attack: enemy damages player
+            self.player_health -= 20
+            if self.player_health <= 0:
+                return True  # game over
+            # Knockback? Just stay
+            return True
+        # Move player
+        # Clear old position (but keep floor type)
+        self.grid[y][x] = FLOOR
+        # Check pickups
+        if (nx, ny) in self.ammo_pickups:
+            self.ammo_pickups.remove((nx, ny))
+            self.player_ammo += 5
+            self.score += 10
+        if (nx, ny) in self.health_pickups:
+            self.health_pickups.remove((nx, ny))
+            self.player_health = min(100, self.player_health + 25)
+            self.score += 10
+        # Move player
+        self.player_pos = (nx, ny)
+        self.grid[ny][nx] = PLAYER
+        return True
+
+    def shoot(self):
+        if self.player_ammo <= 0:
+            return False
+        self.player_ammo -= 1
+        x, y = self.player_pos
+        dx, dy = 0,0
+        if self.facing == 'right':
+            dx = 1
+        elif self.facing == 'left':
+            dx = -1
+        elif self.facing == 'down':
+            dy = 1
+        elif self.facing == 'up':
+            dy = -1
+        # check line of sight
+        nx, ny = x+dx, y+dy
+        while 0 <= nx < GRID_SIZE and 0 <= ny < GRID_SIZE:
+            if self.grid[ny][nx] == WALL:
+                break
+            if (nx, ny) in self.enemies:
+                # kill enemy
+                self.enemies.remove((nx, ny))
+                self.grid[ny][nx] = FLOOR
+                self.score += 50
+                return True
+            nx += dx
+            ny += dy
+        return False
+
+    def enemy_turn(self):
+        # Simple AI: move toward player if adjacent; otherwise move randomly
+        # We'll process each enemy sequentially
+        for enemy in self.enemies[:]:  # copy list because we might modify
+            ex, ey = enemy
+            # Try to move toward player
+            px, py = self.player_pos
+            # Determine direction
+            dx = 0
+            dy = 0
+            if abs(px - ex) > abs(py - ey):
+                dx = 1 if px > ex else -1
+            else:
+                dy = 1 if py > ey else -1
+            # Check if that move is valid
+            nx, ny = ex+dx, ey+dy
+            if 0 <= nx < GRID_SIZE and 0 <= ny < GRID_SIZE and self.grid[ny][nx] != WALL and (nx,ny) != self.player_pos:
+                # Move enemy
+                self.grid[ey][ex] = FLOOR
+                self.grid[ny][nx] = ENEMY
+                self.enemies.remove((ex,ey))
+                self.enemies.append((nx,ny))
+            else:
+                # Random walk
+                possible = []
+                for dx2, dy2 in [(1,0), (-1,0), (0,1), (0,-1)]:
+                    nx2, ny2 = ex+dx2, ey+dy2
+                    if 0 <= nx2 < GRID_SIZE and 0 <= ny2 < GRID_SIZE and self.grid[ny2][nx2] != WALL and (nx2,ny2) != self.player_pos:
+                        possible.append((dx2,dy2))
+                if possible:
+                    dx2, dy2 = random.choice(possible)
+                    nx2, ny2 = ex+dx2, ey+dy2
+                    self.grid[ey][ex] = FLOOR
+                    self.grid[ny2][nx2] = ENEMY
+                    self.enemies.remove((ex,ey))
+                    self.enemies.append((nx2,ny2))
 
 class DoomView(discord.ui.View):
-    def __init__(self, channel_id, grid, player_pos, game_message):
+    def __init__(self, game):
         super().__init__(timeout=None)
-        self.channel_id = channel_id
-        self.grid = grid
-        self.player_pos = player_pos
-        self.game_message = game_message
+        self.game = game
 
-    async def update_grid(self, interaction, new_x, new_y):
-        if 0 <= new_x < GRID_SIZE and 0 <= new_y < GRID_SIZE and self.grid[new_y][new_x] != '#':
-            old_x, old_y = self.player_pos
-            self.grid[old_y][old_x] = '.'
-            self.grid[new_y][new_x] = 'P'
-            self.player_pos = (new_x, new_y)
-            rendered = render_doom_grid(self.grid)
-            await self.game_message.edit(content=rendered, view=self)
-            await interaction.response.defer()
-        else:
-            await interaction.response.send_message("You can't go there!", ephemeral=True)
+    async def update(self, interaction):
+        # Update the message after player action
+        await self.game.message.edit(content=self.game.render(), view=self)
+        await interaction.response.defer()
 
     @discord.ui.button(label='⬆️ Up', style=discord.ButtonStyle.primary)
     async def up_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        x, y = self.player_pos
-        await self.update_grid(interaction, x, y-1)
+        game = self.game
+        game.move_player(0, -1)
+        if game.player_health <= 0:
+            await interaction.response.send_message("You died! Game over.", ephemeral=True)
+            await game.message.delete()
+            del active_doom_games[game.channel_id]
+            return
+        game.enemy_turn()
+        if game.player_health <= 0:
+            await interaction.response.send_message("You died! Game over.", ephemeral=True)
+            await game.message.delete()
+            del active_doom_games[game.channel_id]
+            return
+        await self.update(interaction)
 
     @discord.ui.button(label='⬇️ Down', style=discord.ButtonStyle.primary)
     async def down_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        x, y = self.player_pos
-        await self.update_grid(interaction, x, y+1)
+        game = self.game
+        game.move_player(0, 1)
+        if game.player_health <= 0:
+            await interaction.response.send_message("You died! Game over.", ephemeral=True)
+            await game.message.delete()
+            del active_doom_games[game.channel_id]
+            return
+        game.enemy_turn()
+        if game.player_health <= 0:
+            await interaction.response.send_message("You died! Game over.", ephemeral=True)
+            await game.message.delete()
+            del active_doom_games[game.channel_id]
+            return
+        await self.update(interaction)
 
     @discord.ui.button(label='⬅️ Left', style=discord.ButtonStyle.primary)
     async def left_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        x, y = self.player_pos
-        await self.update_grid(interaction, x-1, y)
+        game = self.game
+        game.move_player(-1, 0)
+        if game.player_health <= 0:
+            await interaction.response.send_message("You died! Game over.", ephemeral=True)
+            await game.message.delete()
+            del active_doom_games[game.channel_id]
+            return
+        game.enemy_turn()
+        if game.player_health <= 0:
+            await interaction.response.send_message("You died! Game over.", ephemeral=True)
+            await game.message.delete()
+            del active_doom_games[game.channel_id]
+            return
+        await self.update(interaction)
 
     @discord.ui.button(label='➡️ Right', style=discord.ButtonStyle.primary)
     async def right_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        x, y = self.player_pos
-        await self.update_grid(interaction, x+1, y)
+        game = self.game
+        game.move_player(1, 0)
+        if game.player_health <= 0:
+            await interaction.response.send_message("You died! Game over.", ephemeral=True)
+            await game.message.delete()
+            del active_doom_games[game.channel_id]
+            return
+        game.enemy_turn()
+        if game.player_health <= 0:
+            await interaction.response.send_message("You died! Game over.", ephemeral=True)
+            await game.message.delete()
+            del active_doom_games[game.channel_id]
+            return
+        await self.update(interaction)
+
+    @discord.ui.button(label='🔫 Shoot', style=discord.ButtonStyle.danger)
+    async def shoot_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        game = self.game
+        if game.player_ammo <= 0:
+            await interaction.response.send_message("Out of ammo!", ephemeral=True)
+            return
+        game.shoot()
+        # after shooting, enemies may attack? In classic Doom, shooting does not skip turn, but for balance we can let enemies move
+        game.enemy_turn()
+        if game.player_health <= 0:
+            await interaction.response.send_message("You died! Game over.", ephemeral=True)
+            await game.message.delete()
+            del active_doom_games[game.channel_id]
+            return
+        await self.update(interaction)
 
     @discord.ui.button(label='❌ End Game', style=discord.ButtonStyle.danger)
     async def end_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.channel_id in active_doom_games:
-            del active_doom_games[self.channel_id]
         await interaction.message.delete()
+        del active_doom_games[self.game.channel_id]
         await interaction.response.send_message("Game ended.", ephemeral=True)
 
 # -----------------------------------------------------------------------------
@@ -308,7 +534,6 @@ thedestroyer <channel> <message>
 ping <channel> <minutes>
 unping <channel>
 startdoom <channel>
-enddoom [channel]
 listchannels
 renameserver <new_name>
 deleteallchannels
@@ -667,39 +892,15 @@ clear
                 print(Fore.RED + f"[-] Channel not found: {channel_name}" + Style.RESET_ALL)
                 return
             if channel.id in active_doom_games:
-                print(Fore.RED + "[-] A Doom game is already active in that channel. Use `enddoom` first." + Style.RESET_ALL)
+                print(Fore.RED + "[-] A Doom game is already active in that channel. Use the End Game button to stop it." + Style.RESET_ALL)
                 return
-            grid, player_pos = generate_doom_grid()
-            rendered = render_doom_grid(grid)
-            view = DoomView(channel.id, grid, player_pos, None)
-            msg = await channel.send(rendered, view=view)
-            view.game_message = msg
-            active_doom_games[channel.id] = {'message_id': msg.id, 'view': view}
+            game = DoomGame(channel.id)
+            view = DoomView(game)
+            msg = await channel.send(game.render(), view=view)
+            game.message = msg
+            game.view = view
+            active_doom_games[channel.id] = game
             print(Fore.YELLOW + f"[+] Doom game started in {channel.name}." + Style.RESET_ALL)
-        elif main == "enddoom":
-            # Determine target channel
-            if len(parts) >= 2:
-                channel_name = parts[1]
-                channel = discord.utils.get(guild.text_channels, name=channel_name)
-                if not channel:
-                    print(Fore.RED + f"[-] Channel not found: {channel_name}" + Style.RESET_ALL)
-                    return
-            else:
-                if message_obj:
-                    channel = message_obj.channel
-                else:
-                    print(Fore.RED + "[-] No channel specified and not in a Discord channel. Usage: enddoom <channel>" + Style.RESET_ALL)
-                    return
-            if channel.id in active_doom_games:
-                # Remove game and delete message
-                data = active_doom_games.pop(channel.id)
-                try:
-                    await data['view'].game_message.delete()
-                except:
-                    pass
-                print(Fore.YELLOW + f"[+] Doom game ended in {channel.name}." + Style.RESET_ALL)
-            else:
-                print(Fore.RED + f"[-] No active Doom game in {channel.name}." + Style.RESET_ALL)
         elif main == "deleteallchannels":
             if not guild:
                 print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
