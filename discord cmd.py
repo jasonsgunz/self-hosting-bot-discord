@@ -6,6 +6,7 @@ import asyncio
 import tempfile
 from difflib import get_close_matches
 import time
+import random
 from collections import defaultdict
 
 TOKEN_FILE = os.path.join(os.path.dirname(__file__), "token.txt")
@@ -84,6 +85,7 @@ member_cache = {}
 cache_timestamp = 0
 CACHE_DURATION = 60
 active_ping_tasks = {}
+active_doom_games = {}          # channel_id -> {'message_id': int, 'view': DoomView}
 
 class RateLimiter:
     def __init__(self, initial_concurrency=10):
@@ -188,6 +190,94 @@ async def ping_loop(channel, minutes):
     except asyncio.CancelledError:
         pass
 
+# --- Doom Game ---
+GRID_SIZE = 32  # 32x32 fits in Discord message (1024 chars)
+
+def generate_doom_grid():
+    """Create a 32x32 grid with walls (#) and empty (.) and player (P) at (1,1)"""
+    grid = [['.' for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
+    # Outer walls
+    for x in range(GRID_SIZE):
+        grid[0][x] = '#'
+        grid[GRID_SIZE-1][x] = '#'
+    for y in range(GRID_SIZE):
+        grid[y][0] = '#'
+        grid[y][GRID_SIZE-1] = '#'
+    # Random obstacles (15% of interior)
+    for y in range(2, GRID_SIZE-2):
+        for x in range(2, GRID_SIZE-2):
+            if random.random() < 0.15 and not (x == 1 and y == 1):
+                grid[y][x] = '#'
+    # Ensure start is empty
+    grid[1][1] = '.'
+    # Place player
+    grid[1][1] = 'P'
+    return grid, (1,1)
+
+def render_doom_grid(grid):
+    rows = []
+    for y in range(GRID_SIZE):
+        row = []
+        for x in range(GRID_SIZE):
+            cell = grid[y][x]
+            if cell == '#':
+                row.append('⬛')
+            elif cell == '.':
+                row.append('⬜')
+            elif cell == 'P':
+                row.append('🟢')
+        rows.append(''.join(row))
+    return '\n'.join(rows)
+
+class DoomView(discord.ui.View):
+    def __init__(self, channel_id, grid, player_pos, game_message):
+        super().__init__(timeout=None)
+        self.channel_id = channel_id
+        self.grid = grid
+        self.player_pos = player_pos
+        self.game_message = game_message
+
+    async def update_grid(self, interaction, new_x, new_y):
+        if 0 <= new_x < GRID_SIZE and 0 <= new_y < GRID_SIZE and self.grid[new_y][new_x] != '#':
+            old_x, old_y = self.player_pos
+            self.grid[old_y][old_x] = '.'
+            self.grid[new_y][new_x] = 'P'
+            self.player_pos = (new_x, new_y)
+            rendered = render_doom_grid(self.grid)
+            await self.game_message.edit(content=rendered, view=self)
+            await interaction.response.defer()
+        else:
+            await interaction.response.send_message("You can't go there!", ephemeral=True)
+
+    @discord.ui.button(label='⬆️ Up', style=discord.ButtonStyle.primary)
+    async def up_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        x, y = self.player_pos
+        await self.update_grid(interaction, x, y-1)
+
+    @discord.ui.button(label='⬇️ Down', style=discord.ButtonStyle.primary)
+    async def down_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        x, y = self.player_pos
+        await self.update_grid(interaction, x, y+1)
+
+    @discord.ui.button(label='⬅️ Left', style=discord.ButtonStyle.primary)
+    async def left_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        x, y = self.player_pos
+        await self.update_grid(interaction, x-1, y)
+
+    @discord.ui.button(label='➡️ Right', style=discord.ButtonStyle.primary)
+    async def right_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        x, y = self.player_pos
+        await self.update_grid(interaction, x+1, y)
+
+    @discord.ui.button(label='❌ End Game', style=discord.ButtonStyle.danger)
+    async def end_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.channel_id in active_doom_games:
+            del active_doom_games[self.channel_id]
+        await interaction.message.delete()
+        await interaction.response.send_message("Game ended.", ephemeral=True)
+
+# -----------------------------------------------------------------------------
+
 async def execute_command(cmd, ctx_guild=None, ctx_author=None, message_obj=None):
     if ctx_guild:
         guild = ctx_guild
@@ -217,6 +307,8 @@ unlock [channel]
 thedestroyer <channel> <message>
 ping <channel> <minutes>
 unping <channel>
+startdoom <channel>
+enddoom [channel]
 listchannels
 renameserver <new_name>
 deleteallchannels
@@ -562,6 +654,52 @@ clear
                 print(Fore.YELLOW + f"[+] Ping loop stopped for {channel.name}." + Style.RESET_ALL)
             else:
                 print(Fore.RED + f"[-] No active ping loop for {channel.name}." + Style.RESET_ALL)
+        elif main == "startdoom":
+            if not guild:
+                print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
+                return
+            if len(parts) < 2:
+                print(Fore.RED + "[-] Usage: startdoom <channel>" + Style.RESET_ALL)
+                return
+            channel_name = parts[1]
+            channel = discord.utils.get(guild.text_channels, name=channel_name)
+            if not channel:
+                print(Fore.RED + f"[-] Channel not found: {channel_name}" + Style.RESET_ALL)
+                return
+            if channel.id in active_doom_games:
+                print(Fore.RED + "[-] A Doom game is already active in that channel. Use `enddoom` first." + Style.RESET_ALL)
+                return
+            grid, player_pos = generate_doom_grid()
+            rendered = render_doom_grid(grid)
+            view = DoomView(channel.id, grid, player_pos, None)
+            msg = await channel.send(rendered, view=view)
+            view.game_message = msg
+            active_doom_games[channel.id] = {'message_id': msg.id, 'view': view}
+            print(Fore.YELLOW + f"[+] Doom game started in {channel.name}." + Style.RESET_ALL)
+        elif main == "enddoom":
+            # Determine target channel
+            if len(parts) >= 2:
+                channel_name = parts[1]
+                channel = discord.utils.get(guild.text_channels, name=channel_name)
+                if not channel:
+                    print(Fore.RED + f"[-] Channel not found: {channel_name}" + Style.RESET_ALL)
+                    return
+            else:
+                if message_obj:
+                    channel = message_obj.channel
+                else:
+                    print(Fore.RED + "[-] No channel specified and not in a Discord channel. Usage: enddoom <channel>" + Style.RESET_ALL)
+                    return
+            if channel.id in active_doom_games:
+                # Remove game and delete message
+                data = active_doom_games.pop(channel.id)
+                try:
+                    await data['view'].game_message.delete()
+                except:
+                    pass
+                print(Fore.YELLOW + f"[+] Doom game ended in {channel.name}." + Style.RESET_ALL)
+            else:
+                print(Fore.RED + f"[-] No active Doom game in {channel.name}." + Style.RESET_ALL)
         elif main == "deleteallchannels":
             if not guild:
                 print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
