@@ -87,15 +87,15 @@ CACHE_DURATION = 60
 active_ping_tasks = {}
 active_doom_games = {}
 
-# ----- Ultra‑fast adaptive rate limiter -----
+# ----- Updated rate limiter based on Discord API limits -----
 class RateLimiter:
-    def __init__(self, initial_concurrency=25):
+    def __init__(self, initial_concurrency=45):
         self.concurrency = initial_concurrency
-        self.max_concurrency = 100
+        self.max_concurrency = 50          # just under global 50/sec
         self.min_concurrency = 1
-        self.rate_limit_count = 0          # per‑batch counter
+        self.rate_limit_count = 0
         self.hardcoded_mode = False
-        self.safe_concurrency = 5
+        self.safe_concurrency = 5           # safe for when rate‑limited
         self.backoff_factor = 0.5
         self.speedup_factor = 1.2
 
@@ -118,7 +118,7 @@ class RateLimiter:
                         if isinstance(res, discord.HTTPException) and res.status == 429:
                             self.rate_limit_count += 1
                             had_rate_limit = True
-                            # Reduce concurrency
+                            # Reduce concurrency on the fly
                             concurrency = max(self.min_concurrency, int(concurrency * self.backoff_factor))
                             if self.rate_limit_count >= 3:
                                 self.hardcoded_mode = True
@@ -131,12 +131,12 @@ class RateLimiter:
                 # If no rate limit in this batch and not in hardcoded mode, increase concurrency
                 if not had_rate_limit and not self.hardcoded_mode:
                     concurrency = min(self.max_concurrency, int(concurrency * self.speedup_factor))
-                # Apply a small delay to let Discord breathe if we're near the limit
+                # Small delay to smooth out bursts if we're near the limit
                 if len(batch) > concurrency * 0.8:
                     await asyncio.sleep(0.1)
             except Exception as e:
                 print(Fore.RED + f"Batch error: {e}" + Style.RESET_ALL)
-        # Update the main concurrency for future batches (but start fresh each command)
+        # Update the main concurrency for future calls (optional)
         self.concurrency = concurrency
         return results
 
