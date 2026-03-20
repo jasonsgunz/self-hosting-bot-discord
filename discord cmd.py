@@ -83,6 +83,7 @@ cmd_guild = None
 member_cache = {}
 cache_timestamp = 0
 CACHE_DURATION = 60
+active_ping_tasks = {}
 
 class RateLimiter:
     def __init__(self, initial_concurrency=10):
@@ -174,6 +175,19 @@ async def choose_server():
         except ValueError:
             print(Fore.RED + "[-] Enter a valid number" + Style.RESET_ALL)
 
+async def ping_loop(channel, minutes):
+    try:
+        while True:
+            msg = await channel.send("@everyone")
+            await asyncio.sleep(1)
+            try:
+                await msg.delete()
+            except:
+                pass
+            await asyncio.sleep(minutes * 60)
+    except asyncio.CancelledError:
+        pass
+
 async def execute_command(cmd, ctx_guild=None, ctx_author=None, message_obj=None):
     if ctx_guild:
         guild = ctx_guild
@@ -201,6 +215,8 @@ nicknameall <new_nick>
 lockdown [channel]
 unlock [channel]
 thedestroyer <channel> <message>
+ping <channel> <minutes>
+unping <channel>
 listchannels
 renameserver <new_name>
 deleteallchannels
@@ -502,6 +518,50 @@ clear
                 except Exception as e:
                     print(Fore.RED + f"[-] Destroyer error: {e}" + Style.RESET_ALL)
             asyncio.create_task(destroy_trigger())
+        elif main == "ping":
+            if not guild:
+                print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
+                return
+            if len(parts) < 3:
+                print(Fore.RED + "[-] Usage: ping <channel> <minutes>" + Style.RESET_ALL)
+                return
+            channel_name = parts[1]
+            try:
+                minutes = int(parts[2])
+                if minutes < 1:
+                    print(Fore.RED + "[-] Minutes must be at least 1." + Style.RESET_ALL)
+                    return
+            except ValueError:
+                print(Fore.RED + "[-] Minutes must be a number." + Style.RESET_ALL)
+                return
+            channel = discord.utils.get(guild.text_channels, name=channel_name)
+            if not channel:
+                print(Fore.RED + f"[-] Channel not found: {channel_name}" + Style.RESET_ALL)
+                return
+            if channel.id in active_ping_tasks:
+                active_ping_tasks[channel.id].cancel()
+                del active_ping_tasks[channel.id]
+            task = asyncio.create_task(ping_loop(channel, minutes))
+            active_ping_tasks[channel.id] = task
+            print(Fore.YELLOW + f"[+] Ping loop started in {channel.name} every {minutes} minute(s)." + Style.RESET_ALL)
+        elif main == "unping":
+            if not guild:
+                print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
+                return
+            if len(parts) < 2:
+                print(Fore.RED + "[-] Usage: unping <channel>" + Style.RESET_ALL)
+                return
+            channel_name = parts[1]
+            channel = discord.utils.get(guild.text_channels, name=channel_name)
+            if not channel:
+                print(Fore.RED + f"[-] Channel not found: {channel_name}" + Style.RESET_ALL)
+                return
+            if channel.id in active_ping_tasks:
+                active_ping_tasks[channel.id].cancel()
+                del active_ping_tasks[channel.id]
+                print(Fore.YELLOW + f"[+] Ping loop stopped for {channel.name}." + Style.RESET_ALL)
+            else:
+                print(Fore.RED + f"[-] No active ping loop for {channel.name}." + Style.RESET_ALL)
         elif main == "deleteallchannels":
             if not guild:
                 print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
