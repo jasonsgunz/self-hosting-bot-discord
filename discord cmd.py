@@ -85,7 +85,7 @@ member_cache = {}
 cache_timestamp = 0
 CACHE_DURATION = 60
 active_ping_tasks = {}
-active_doom_games = {}          # channel_id -> DoomGame instance
+active_doom_games = {}
 
 class RateLimiter:
     def __init__(self, initial_concurrency=10):
@@ -191,9 +191,9 @@ async def ping_loop(channel, minutes):
         pass
 
 # --- Enhanced Doom Game ---
-GRID_SIZE = 24   # smaller grid so entire game fits in one message
-WALL = '▪'       # small black square
-FLOOR = '▫'      # small white square
+GRID_SIZE = 24
+WALL = '▪'
+FLOOR = '▫'
 PLAYER = '🟢'
 ENEMY = '🔴'
 AMMO = '🔫'
@@ -204,52 +204,41 @@ class DoomGame:
         self.channel_id = channel_id
         self.grid = []
         self.player_pos = None
-        self.enemies = []       # list of (x, y)
-        self.ammo_pickups = []  # list of (x, y)
-        self.health_pickups = [] # list of (x, y)
+        self.enemies = []
+        self.ammo_pickups = []
+        self.health_pickups = []
         self.player_health = 100
         self.player_ammo = 10
         self.score = 0
-        self.facing = 'right'   # last move direction
-        self.message = None      # the message object for editing
-        self.view = None         # the view attached to the message
-
-        # Build maze
+        self.facing = 'right'
+        self.message = None
+        self.view = None
         self.generate_maze()
 
     def generate_maze(self):
-        # Initialize all walls
         self.grid = [[WALL for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
-        # Carve simple passages using recursive backtracking (makes sure all cells reachable)
-        # Start at (1,1) which will be player start
         stack = [(1,1)]
         self.grid[1][1] = FLOOR
         while stack:
             x, y = stack[-1]
-            # find unvisited neighbors two steps away
             neighbors = []
             for dx, dy in [(2,0), (-2,0), (0,2), (0,-2)]:
                 nx, ny = x+dx, y+dy
                 if 0 < nx < GRID_SIZE-1 and 0 < ny < GRID_SIZE-1 and self.grid[ny][nx] == WALL:
-                    # if that cell is wall, we can carve
                     neighbors.append((nx, ny, dx//2, dy//2))
             if neighbors:
                 nx, ny, cx, cy = random.choice(neighbors)
-                # carve path
                 self.grid[ny][nx] = FLOOR
                 self.grid[y+cy][x+cx] = FLOOR
                 stack.append((nx, ny))
             else:
                 stack.pop()
-        # Add extra random open spaces for variety
         for _ in range(GRID_SIZE * 2):
             x = random.randint(1, GRID_SIZE-2)
             y = random.randint(1, GRID_SIZE-2)
             self.grid[y][x] = FLOOR
-        # Place player at (1,1)
         self.player_pos = (1,1)
         self.grid[1][1] = PLAYER
-        # Place enemies (5-8)
         num_enemies = random.randint(5, 8)
         for _ in range(num_enemies):
             while True:
@@ -259,7 +248,6 @@ class DoomGame:
                     self.grid[y][x] = ENEMY
                     self.enemies.append((x,y))
                     break
-        # Place ammo pickups (3-5)
         num_ammo = random.randint(3,5)
         for _ in range(num_ammo):
             while True:
@@ -268,7 +256,6 @@ class DoomGame:
                 if (x,y) != self.player_pos and self.grid[y][x] == FLOOR and (x,y) not in self.enemies:
                     self.ammo_pickups.append((x,y))
                     break
-        # Place health pickups (2-3)
         num_health = random.randint(2,3)
         for _ in range(num_health):
             while True:
@@ -303,26 +290,18 @@ class DoomGame:
         nx, ny = x+dx, y+dy
         if not (0 <= nx < GRID_SIZE and 0 <= ny < GRID_SIZE):
             return False
-        # Update facing
         if dx != 0:
             self.facing = 'right' if dx > 0 else 'left'
         elif dy != 0:
             self.facing = 'down' if dy > 0 else 'up'
-        # Check if it's a wall
         if self.grid[ny][nx] == WALL:
             return False
-        # Check if enemy
         if (nx, ny) in self.enemies:
-            # Attack: enemy damages player
             self.player_health -= 20
             if self.player_health <= 0:
-                return True  # game over
-            # Knockback? Just stay
+                return True
             return True
-        # Move player
-        # Clear old position (but keep floor type)
         self.grid[y][x] = FLOOR
-        # Check pickups
         if (nx, ny) in self.ammo_pickups:
             self.ammo_pickups.remove((nx, ny))
             self.player_ammo += 5
@@ -331,7 +310,6 @@ class DoomGame:
             self.health_pickups.remove((nx, ny))
             self.player_health = min(100, self.player_health + 25)
             self.score += 10
-        # Move player
         self.player_pos = (nx, ny)
         self.grid[ny][nx] = PLAYER
         return True
@@ -350,13 +328,11 @@ class DoomGame:
             dy = 1
         elif self.facing == 'up':
             dy = -1
-        # check line of sight
         nx, ny = x+dx, y+dy
         while 0 <= nx < GRID_SIZE and 0 <= ny < GRID_SIZE:
             if self.grid[ny][nx] == WALL:
                 break
             if (nx, ny) in self.enemies:
-                # kill enemy
                 self.enemies.remove((nx, ny))
                 self.grid[ny][nx] = FLOOR
                 self.score += 50
@@ -366,29 +342,22 @@ class DoomGame:
         return False
 
     def enemy_turn(self):
-        # Simple AI: move toward player if adjacent; otherwise move randomly
-        # We'll process each enemy sequentially
-        for enemy in self.enemies[:]:  # copy list because we might modify
+        for enemy in self.enemies[:]:
             ex, ey = enemy
-            # Try to move toward player
             px, py = self.player_pos
-            # Determine direction
             dx = 0
             dy = 0
             if abs(px - ex) > abs(py - ey):
                 dx = 1 if px > ex else -1
             else:
                 dy = 1 if py > ey else -1
-            # Check if that move is valid
             nx, ny = ex+dx, ey+dy
             if 0 <= nx < GRID_SIZE and 0 <= ny < GRID_SIZE and self.grid[ny][nx] != WALL and (nx,ny) != self.player_pos:
-                # Move enemy
                 self.grid[ey][ex] = FLOOR
                 self.grid[ny][nx] = ENEMY
                 self.enemies.remove((ex,ey))
                 self.enemies.append((nx,ny))
             else:
-                # Random walk
                 possible = []
                 for dx2, dy2 in [(1,0), (-1,0), (0,1), (0,-1)]:
                     nx2, ny2 = ex+dx2, ey+dy2
@@ -408,7 +377,6 @@ class DoomView(discord.ui.View):
         self.game = game
 
     async def update(self, interaction):
-        # Update the message after player action
         await self.game.message.edit(content=self.game.render(), view=self)
         await interaction.response.defer()
 
@@ -487,7 +455,6 @@ class DoomView(discord.ui.View):
             await interaction.response.send_message("Out of ammo!", ephemeral=True)
             return
         game.shoot()
-        # after shooting, enemies may attack? In classic Doom, shooting does not skip turn, but for balance we can let enemies move
         game.enemy_turn()
         if game.player_health <= 0:
             await interaction.response.send_message("You died! Game over.", ephemeral=True)
@@ -534,6 +501,7 @@ thedestroyer <channel> <message>
 ping <channel> <minutes>
 unping <channel>
 startdoom <channel>
+gifcaption <gif_url> <caption>  (in Discord)  or  gifcaption <channel> <gif_url> <caption>  (in CMD)
 listchannels
 renameserver <new_name>
 deleteallchannels
@@ -901,6 +869,37 @@ clear
             game.view = view
             active_doom_games[channel.id] = game
             print(Fore.YELLOW + f"[+] Doom game started in {channel.name}." + Style.RESET_ALL)
+        elif main == "gifcaption":
+            if not guild:
+                print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
+                return
+            # Discord mode (ctx_author exists) -> channel from message
+            if ctx_author:
+                if len(parts) < 3:
+                    print(Fore.RED + "[-] Usage: gifcaption <gif_url> <caption>" + Style.RESET_ALL)
+                    return
+                gif_url = parts[1]
+                caption = " ".join(parts[2:])
+                channel = message_obj.channel
+            else:
+                # CMD mode: channel name must be first argument
+                if len(parts) < 4:
+                    print(Fore.RED + "[-] In CMD mode, usage: gifcaption <channel> <gif_url> <caption>" + Style.RESET_ALL)
+                    return
+                channel_name = parts[1]
+                gif_url = parts[2]
+                caption = " ".join(parts[3:])
+                channel = discord.utils.get(guild.text_channels, name=channel_name)
+                if not channel:
+                    print(Fore.RED + f"[-] Channel not found: {channel_name}" + Style.RESET_ALL)
+                    return
+            if not (gif_url.startswith("http://") or gif_url.startswith("https://")):
+                print(Fore.RED + "[-] Invalid URL. Must start with http:// or https://" + Style.RESET_ALL)
+                return
+            embed = discord.Embed(description=caption, color=discord.Color.blue())
+            embed.set_image(url=gif_url)
+            await channel.send(embed=embed)
+            print(Fore.YELLOW + f"[+] GIF with caption sent in {channel.name}" + Style.RESET_ALL)
         elif main == "deleteallchannels":
             if not guild:
                 print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
