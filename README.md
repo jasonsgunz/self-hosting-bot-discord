@@ -69,7 +69,7 @@ This Project is a open source, self hosting bot. it has lots of features u can e
 `refreshservers` - Re-select the current server from the list  
 `clear` - Clears the CMD screen  
 `help` - Shows this command list
-`startdoom <channel>` starts a ,,doom like" experience u can play using buttons (sadly doesnt work like doom)
+`startdoom <channel>` starts a ,,doom like" experience u can play using buttons (its really shit so dont expect anything mindblowing only use it as a template if u wanna make games in discord.
 `ping <channel> <minutes>` basically @everyone every timespan u choose in the channel
 `unping` stops pinging
 
