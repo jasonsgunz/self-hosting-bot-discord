@@ -9,6 +9,8 @@ import time
 import random
 from collections import defaultdict
 import datetime
+import sys
+import traceback
 
 TOKEN_FILE = os.path.join(os.path.dirname(__file__), "token.txt")
 
@@ -88,6 +90,21 @@ CACHE_DURATION = 60
 active_ping_tasks = {}
 active_doom_games = {}
 
+# ---- Error logging for debug mode ----
+error_log = []
+
+def log_error(error_type, error_msg, traceback_info=None):
+    """Add an error to the error log."""
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    entry = f"[{timestamp}] {error_type}: {error_msg}"
+    if traceback_info:
+        entry += f"\n{traceback_info}"
+    error_log.append(entry)
+
+# ---- Global debug flag ----
+debug_mode = False
+
+# ---- Rate limiter (unchanged) ----
 class RateLimiter:
     def __init__(self, initial_concurrency=45):
         self.concurrency = initial_concurrency
@@ -132,11 +149,13 @@ class RateLimiter:
                     await asyncio.sleep(0.1)
             except Exception as e:
                 print(Fore.RED + f"Batch error: {e}" + Style.RESET_ALL)
+                log_error("Batch Error", str(e), traceback.format_exc())
         self.concurrency = concurrency
         return results
 
 rate_limiter = RateLimiter()
 
+# ---- Utility functions (unchanged except for error logging) ----
 def refresh_cache(guild):
     global member_cache, cache_timestamp
     now = time.time()
@@ -154,12 +173,18 @@ def get_member_by_name_or_closest(guild, name):
         return cache[matches[0]]
     return None
 
-def print_banner():
+def print_banner(mode="normal"):
     os.system("cls")
-    print(Fore.GREEN + "===============================")
-    print("           BOT PANEL")
-    print("===============================" + Style.RESET_ALL)
+    if mode == "debug":
+        print(Fore.CYAN + "===============================")
+        print("           DEBUG MODE")
+        print("===============================" + Style.RESET_ALL)
+    else:
+        print(Fore.GREEN + "===============================")
+        print("           BOT PANEL")
+        print("===============================" + Style.RESET_ALL)
 
+# ---- Normal command loop ----
 async def cmd_loop():
     global cmd_guild
     await bot.wait_until_ready()
@@ -204,6 +229,7 @@ async def ping_loop(channel, minutes):
     except asyncio.CancelledError:
         pass
 
+# ---- Doom game (unchanged) ----
 GRID_SIZE = 24
 WALL = '▪'
 FLOOR = '▫'
@@ -482,6 +508,7 @@ class DoomView(discord.ui.View):
         del active_doom_games[self.game.channel_id]
         await interaction.response.send_message("Game ended.", ephemeral=True)
 
+# ---- TestConfirmView (kept for debug run_tests) ----
 class TestConfirmView(discord.ui.View):
     def __init__(self, requester):
         super().__init__(timeout=30)
@@ -505,6 +532,7 @@ class TestConfirmView(discord.ui.View):
         await interaction.message.delete()
         self.stop()
 
+# ---- Test function (used in debug mode) ----
 async def run_tests(guild, requester_id):
     test_channel_name = f"test-{random.randint(1000,9999)}"
     test_channel = None
@@ -639,6 +667,7 @@ async def run_tests(guild, requester_id):
 
     except Exception as e:
         print(Fore.RED + f"Test failed: {e}" + Style.RESET_ALL)
+        log_error("Test Error", str(e), traceback.format_exc())
     finally:
         for ch in created_channels:
             try:
@@ -656,7 +685,96 @@ async def run_tests(guild, requester_id):
             except:
                 pass
 
+# ---- Debug mode command loop ----
+async def debug_cmd_loop():
+    global debug_mode
+    print_banner("debug")
+    print(Fore.CYAN + "[DEBUG MODE] Type 'help' for available commands." + Style.RESET_ALL)
+    while True:
+        cmd = await asyncio.to_thread(input, Fore.CYAN + "debug> " + Style.RESET_ALL)
+        await handle_debug_command(cmd)
+
+async def handle_debug_command(cmd):
+    global debug_mode, error_log
+    parts = cmd.strip().split()
+    if not parts:
+        return
+    command = parts[0].lower()
+    if command == "help":
+        print(Fore.CYAN + """
+Debug commands:
+  help               - Show this help
+  clear              - Clear the screen
+  exit               - Exit the bot (closes CMD)
+  errorlist          - Show all captured errors (with explanations where possible)
+  clear_errors       - Clear the error log
+  info               - Show bot information (guilds, uptime, etc.)
+  vars               - Show important global variables
+  run_tests          - Run the automated test (like old testbot) - results appear in console
+  reload             - Reload the bot code (experimental – requires restart)
+  dump_errors        - Save error log to file
+  list_commands      - List all available Discord commands (including hidden)
+""" + Style.RESET_ALL)
+    elif command == "clear":
+        print_banner("debug")
+    elif command == "exit":
+        print(Fore.YELLOW + "Exiting bot..." + Style.RESET_ALL)
+        await bot.close()
+        sys.exit(0)
+    elif command == "errorlist":
+        if not error_log:
+            print(Fore.GREEN + "No errors logged." + Style.RESET_ALL)
+        else:
+            print(Fore.CYAN + "\n=== Error Log ===\n" + Style.RESET_ALL)
+            for i, err in enumerate(error_log, 1):
+                print(f"{i}. {err}")
+                print()
+    elif command == "clear_errors":
+        error_log.clear()
+        print(Fore.GREEN + "Error log cleared." + Style.RESET_ALL)
+    elif command == "info":
+        print(Fore.CYAN + "=== Bot Info ===" + Style.RESET_ALL)
+        print(f"Guilds: {len(bot.guilds)}")
+        print(f"Logged in as: {bot.user} (ID: {bot.user.id})")
+        print(f"Debug mode: {debug_mode}")
+        if bot.guilds:
+            print("\nServers:")
+            for g in bot.guilds:
+                print(f"  {g.name} (ID: {g.id})")
+        print(Fore.CYAN + "================" + Style.RESET_ALL)
+    elif command == "vars":
+        print(Fore.CYAN + "=== Global Variables (selected) ===" + Style.RESET_ALL)
+        print(f"log_targets: {list(log_targets.keys())}")
+        print(f"timeout_targets: {timeout_targets}")
+        print(f"active_ping_tasks: {active_ping_tasks}")
+        print(f"active_doom_games: {active_doom_games}")
+        print(f"member_cache: {list(member_cache.keys()) if member_cache else 'empty'}")
+        print(Fore.CYAN + "=====================================" + Style.RESET_ALL)
+    elif command == "run_tests":
+        if not bot.guilds:
+            print(Fore.RED + "Bot is not in any servers, cannot run tests." + Style.RESET_ALL)
+            return
+        guild = bot.guilds[0]
+        print(Fore.YELLOW + "Running tests on guild: " + guild.name + Style.RESET_ALL)
+        await run_tests(guild, 0)
+    elif command == "reload":
+        print(Fore.RED + "Reloading the bot is not fully implemented. Please restart the script." + Style.RESET_ALL)
+    elif command == "dump_errors":
+        filename = f"error_log_{int(time.time())}.txt"
+        with open(filename, "w", encoding="utf-8") as f:
+            for err in error_log:
+                f.write(err + "\n\n")
+        print(Fore.GREEN + f"Error log saved to {filename}" + Style.RESET_ALL)
+    elif command == "list_commands":
+        commands_list = [cmd.name for cmd in bot.commands]
+        print(Fore.CYAN + "All registered Discord commands:" + Style.RESET_ALL)
+        print(", ".join(sorted(commands_list)))
+    else:
+        print(Fore.RED + f"Unknown debug command: {command}. Type 'help' for available commands." + Style.RESET_ALL)
+
+# ---- Main command executor with debug mode support ----
 async def execute_command(cmd, ctx_guild=None, ctx_author=None, message_obj=None):
+    global debug_mode
     if ctx_guild:
         guild = ctx_guild
         print(Fore.CYAN + f"[DISCORD COMMAND] {cmd} executed by {ctx_author} in {guild.name}" + Style.RESET_ALL)
@@ -667,6 +785,20 @@ async def execute_command(cmd, ctx_guild=None, ctx_author=None, message_obj=None
         if not parts:
             return
         main = parts[0].lower()
+        # Hidden command to enter debug mode (only from CMD, not from Discord)
+        if main == "debugmode" and not ctx_author:
+            confirm = await asyncio.to_thread(input, Fore.YELLOW + "⚠️ Warning: Entering debug mode will disable Discord commands and you cannot return to normal panel. Type 'y' to proceed or 'n' to cancel: " + Style.RESET_ALL)
+            if confirm.lower() == "y":
+                debug_mode = True
+                await debug_cmd_loop()
+            else:
+                print("Cancelled.")
+            return
+        # If debug mode is active, ignore any other commands (except the hidden one above)
+        if debug_mode:
+            print(Fore.RED + "Debug mode is active. Discord commands are disabled. Type 'exit' to quit debug mode and close bot." + Style.RESET_ALL)
+            return
+        # Normal command processing (all original commands except testbot)
         if main == "help":
             print(Fore.CYAN + """
 Available commands:
@@ -686,7 +818,6 @@ thedestroyer <channel> <message>
 ping <channel> <minutes>
 unping <channel>
 startdoom <channel>
-testbot
 listchannels
 renameserver <new_name>
 deleteallchannels
@@ -703,32 +834,6 @@ refreshservers
 renewtoken
 clear
             """ + Style.RESET_ALL)
-        elif main == "testbot":
-            if not guild:
-                print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
-                return
-            if not ctx_author:
-                print(Fore.RED + "[-] testbot command can only be used in Discord." + Style.RESET_ALL)
-                return
-            view = TestConfirmView(ctx_author)
-            embed = discord.Embed(
-                title="⚠️ Bot Test",
-                description=(
-                    "This will test most bot features (excluding destructive commands).\n\n"
-                    "**Commands NOT tested:** `kick`, `ban`, `unban`, `clear`, `help`, and any CMD‑only commands.\n"
-                    "If you need to verify those, please test them manually.\n\n"
-                    "The test will create temporary channels and briefly rename the server.\n"
-                    "Do you want to proceed?"
-                ),
-                color=discord.Color.orange()
-            )
-            msg = await message_obj.channel.send(embed=embed, view=view)
-            await view.wait()
-            if view.confirmed:
-                await run_tests(guild, ctx_author.id)
-            else:
-                await msg.delete()
-                await message_obj.channel.send("Test cancelled.", delete_after=5)
         elif main == "listchannels":
             if not guild:
                 print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
@@ -1255,7 +1360,9 @@ clear
             print(Fore.RED + "Unknown command. Type 'help'." + Style.RESET_ALL)
     except Exception as e:
         print(Fore.RED + f"Error: {e}" + Style.RESET_ALL)
+        log_error("Command Execution Error", str(e), traceback.format_exc())
 
+# ---- Discord events ----
 @bot.event
 async def on_message(message):
     if message.author == bot.user:
@@ -1280,6 +1387,7 @@ async def on_message(message):
             await execute_command(command_text, message.guild, message.author, message_obj=message)
         except Exception as e:
             print(Fore.RED + f"[DISCORD COMMAND ERROR] {e}" + Style.RESET_ALL)
+            log_error("Discord Command Error", str(e), traceback.format_exc())
         finally:
             try:
                 await message.delete()
