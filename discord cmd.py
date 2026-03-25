@@ -94,7 +94,6 @@ active_doom_games = {}
 error_log = []
 
 def log_error(error_type, error_msg, traceback_info=None):
-    """Add an error to the error log."""
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     entry = f"[{timestamp}] {error_type}: {error_msg}"
     if traceback_info:
@@ -155,7 +154,7 @@ class RateLimiter:
 
 rate_limiter = RateLimiter()
 
-# ---- Utility functions (unchanged except for error logging) ----
+# ---- Utility functions ----
 def refresh_cache(guild):
     global member_cache, cache_timestamp
     now = time.time()
@@ -211,6 +210,25 @@ async def choose_server():
                 cmd_guild = bot.guilds[index]
                 print(Fore.YELLOW + f"[+] Current server set to: {cmd_guild.name}" + Style.RESET_ALL)
                 break
+            else:
+                print(Fore.RED + "[-] Invalid choice" + Style.RESET_ALL)
+        except ValueError:
+            print(Fore.RED + "[-] Enter a valid number" + Style.RESET_ALL)
+
+# ---- Helper for debug mode server selection ----
+async def choose_server_for_debug():
+    if not bot.guilds:
+        print(Fore.RED + "[-] Bot is not in any servers!" + Style.RESET_ALL)
+        return None
+    print(Fore.CYAN + "[INFO] Your bot is in the following servers:" + Style.RESET_ALL)
+    for i, g in enumerate(bot.guilds, start=1):
+        print(f"{i}. {g.name}")
+    while True:
+        choice = await asyncio.to_thread(input, "Select a server by number: ")
+        try:
+            index = int(choice) - 1
+            if 0 <= index < len(bot.guilds):
+                return bot.guilds[index]
             else:
                 print(Fore.RED + "[-] Invalid choice" + Style.RESET_ALL)
         except ValueError:
@@ -687,7 +705,6 @@ async def run_tests(guild, requester_id):
 
 # ---- Debug mode command loop ----
 async def debug_cmd_loop():
-    global debug_mode
     print_banner("debug")
     print(Fore.CYAN + "[DEBUG MODE] Type 'help' for available commands." + Style.RESET_ALL)
     while True:
@@ -710,7 +727,7 @@ Debug commands:
   clear_errors       - Clear the error log
   info               - Show bot information (guilds, uptime, etc.)
   vars               - Show important global variables
-  run_tests          - Run the automated test (like old testbot) - results appear in console
+  run_tests          - Choose a server and run the automated test (results in console)
   reload             - Reload the bot code (experimental – requires restart)
   dump_errors        - Save error log to file
   list_commands      - List all available Discord commands (including hidden)
@@ -754,7 +771,10 @@ Debug commands:
         if not bot.guilds:
             print(Fore.RED + "Bot is not in any servers, cannot run tests." + Style.RESET_ALL)
             return
-        guild = bot.guilds[0]
+        guild = await choose_server_for_debug()
+        if guild is None:
+            print(Fore.RED + "No server selected. Test cancelled." + Style.RESET_ALL)
+            return
         print(Fore.YELLOW + "Running tests on guild: " + guild.name + Style.RESET_ALL)
         await run_tests(guild, 0)
     elif command == "reload":
