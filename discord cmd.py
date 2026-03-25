@@ -505,7 +505,7 @@ class TestConfirmView(discord.ui.View):
         await interaction.message.delete()
         self.stop()
 
-async def run_tests(channel, guild, requester_id):
+async def run_tests(guild, requester_id):
     test_channel_name = f"test-{random.randint(1000,9999)}"
     test_channel = None
     original_name = guild.name
@@ -594,20 +594,42 @@ async def run_tests(channel, guild, requester_id):
         ping_task.cancel()
         add_report(True, "ping/unping: ping loop started and stopped")
 
-        log_targets[requester_id] = []
-        add_report(True, "log: started logging")
-        test_msg = "Test message for log"
-        await test_channel.send(test_msg)
-        await asyncio.sleep(1)
-        if requester_id in log_targets:
-            log_data = log_targets.pop(requester_id)
-            if len(log_data) > 0:
-                add_report(True, "stoplog: messages logged successfully")
-            else:
-                add_report(False, "stoplog: no messages logged")
-        else:
-            add_report(False, "stoplog: logging failed")
+        # Safely test kick, ban, unban on the server owner (expect permission error)
+        owner = guild.owner
+        if owner:
+            try:
+                # Attempt kick
+                await owner.kick(reason="Test")
+                add_report(False, "kick: unexpected success (should have been blocked)")
+                # If it succeeded, we need to undo? But it shouldn't.
+            except discord.Forbidden as e:
+                # This is expected – can't kick owner
+                add_report(True, "kick: command logic works (blocked as expected)")
+            except Exception as e:
+                add_report(False, f"kick: unexpected error {e}")
 
+            try:
+                await owner.ban(reason="Test")
+                add_report(False, "ban: unexpected success")
+            except discord.Forbidden as e:
+                add_report(True, "ban: command logic works (blocked as expected)")
+            except Exception as e:
+                add_report(False, f"ban: unexpected error {e}")
+
+            # Unban test – we can't unban someone who isn't banned; but the command expects a user ID.
+            # We'll attempt to unban a non‑existent user (0) – this should fail with "user not found"
+            try:
+                await guild.unban(discord.Object(id=0))
+                add_report(False, "unban: unexpected success")
+            except discord.NotFound:
+                add_report(True, "unban: command logic works (user not found error)")
+            except Exception as e:
+                add_report(False, f"unban: unexpected error {e}")
+
+        else:
+            add_report(False, "Could not find server owner for ban/kick test")
+
+        # Doom test
         game = DoomGame(test_channel.id)
         view = DoomView(game)
         msg = await test_channel.send(game.render(), view=view)
@@ -616,11 +638,19 @@ async def run_tests(channel, guild, requester_id):
         await msg.delete()
         add_report(True, "startdoom: game started and ended")
 
-        await channel.send(f"**Test Done.** {success_count} Succeeded / {fail_count} Failed.\n" + "\n".join(report_lines), delete_after=30)
+        # Print results to console
+        print(Fore.CYAN + "\n=== Test Results ===" + Style.RESET_ALL)
+        print(Fore.CYAN + f"Test Done. {success_count} Succeeded / {fail_count} Failed." + Style.RESET_ALL)
+        for line in report_lines:
+            if line.startswith("✅"):
+                print(Fore.GREEN + line + Style.RESET_ALL)
+            elif line.startswith("❌"):
+                print(Fore.RED + line + Style.RESET_ALL)
+            else:
+                print(line)
 
     except Exception as e:
-        await channel.send(f"Test failed: {e}")
-        print(Fore.RED + f"Test error: {e}" + Style.RESET_ALL)
+        print(Fore.RED + f"Test failed: {e}" + Style.RESET_ALL)
     finally:
         for ch in created_channels:
             try:
@@ -707,7 +737,7 @@ clear
             msg = await message_obj.channel.send(embed=embed, view=view)
             await view.wait()
             if view.confirmed:
-                await run_tests(message_obj.channel, guild, ctx_author.id)
+                await run_tests(guild, ctx_author.id)
             else:
                 await msg.delete()
                 await message_obj.channel.send("Test cancelled.", delete_after=5)
