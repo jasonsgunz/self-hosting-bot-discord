@@ -483,14 +483,14 @@ class DoomView(discord.ui.View):
         await interaction.response.send_message("Game ended.", ephemeral=True)
 
 class TestConfirmView(discord.ui.View):
-    def __init__(self, ctx):
+    def __init__(self, requester):
         super().__init__(timeout=30)
-        self.ctx = ctx
+        self.requester = requester
         self.confirmed = False
 
     @discord.ui.button(label='✅ Proceed', style=discord.ButtonStyle.success)
     async def proceed(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user != self.ctx.author:
+        if interaction.user != self.requester:
             await interaction.response.send_message("You cannot interact with this.", ephemeral=True)
             return
         self.confirmed = True
@@ -499,13 +499,13 @@ class TestConfirmView(discord.ui.View):
 
     @discord.ui.button(label='❌ Quit', style=discord.ButtonStyle.danger)
     async def quit(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user != self.ctx.author:
+        if interaction.user != self.requester:
             await interaction.response.send_message("You cannot interact with this.", ephemeral=True)
             return
         await interaction.message.delete()
         self.stop()
 
-async def run_tests(ctx, guild):
+async def run_tests(channel, guild, requester_id):
     test_channel_name = f"test-{random.randint(1000,9999)}"
     test_channel = None
     original_name = guild.name
@@ -594,13 +594,13 @@ async def run_tests(ctx, guild):
         ping_task.cancel()
         add_report(True, "ping/unping: ping loop started and stopped")
 
-        log_targets[ctx.author.id] = []
+        log_targets[requester_id] = []
         add_report(True, "log: started logging")
         test_msg = "Test message for log"
         await test_channel.send(test_msg)
         await asyncio.sleep(1)
-        if ctx.author.id in log_targets:
-            log_data = log_targets.pop(ctx.author.id)
+        if requester_id in log_targets:
+            log_data = log_targets.pop(requester_id)
             if len(log_data) > 0:
                 add_report(True, "stoplog: messages logged successfully")
             else:
@@ -616,10 +616,10 @@ async def run_tests(ctx, guild):
         await msg.delete()
         add_report(True, "startdoom: game started and ended")
 
-        await ctx.send(f"**Test Done.** {success_count} Succeeded / {fail_count} Failed.\n" + "\n".join(report_lines), delete_after=30)
+        await channel.send(f"**Test Done.** {success_count} Succeeded / {fail_count} Failed.\n" + "\n".join(report_lines), delete_after=30)
 
     except Exception as e:
-        await ctx.send(f"Test failed: {e}")
+        await channel.send(f"Test failed: {e}")
         print(Fore.RED + f"Test error: {e}" + Style.RESET_ALL)
     finally:
         for ch in created_channels:
@@ -707,7 +707,7 @@ clear
             msg = await message_obj.channel.send(embed=embed, view=view)
             await view.wait()
             if view.confirmed:
-                await run_tests(ctx_author, guild)
+                await run_tests(message_obj.channel, guild, ctx_author.id)
             else:
                 await msg.delete()
                 await message_obj.channel.send("Test cancelled.", delete_after=5)
