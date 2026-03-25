@@ -1,17 +1,14 @@
-UPDATE 18.03.2026
+UPDATE 25.03.2026
 
-Smarter Performance
+DEBUG MODE
 
-- Auto rate limit handling – The bot detects when Discord is limiting you and automatically adjusts speed to avoid getting blocked
-- Member caching – Finds users faster by remembering member names
-- Parallel processing – Does multiple things at once instead of waiting
+- typing debugmode in cmd will now give u a little selection of tools if u wanna fork it and expand it.
 
-✅ Everything Else Stays the Same
+MORE COMMANDS
 
-- All commands work exactly as before
-- No new commands to learn
-- No changes to how you use the bot
+- now has 10+ more commands than a week ago
 
-NOTE
+BETTER PERFORMANCE
 
-- Might take more RAM then usual
+- uses more ram then usual to perform better
+
