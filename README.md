@@ -9,8 +9,6 @@ This Project is a open source, self hosting bot. it has lots of features u can e
 
 -- Python set to default for running .py files
 
--- in the python terminal (without any code used in it), paste `pip install discord.py colorama` for the code to work flawlessly
-
 # NOTE
 
 -- Without these steps, u wont get it work so proceed when done.
@@ -35,11 +33,7 @@ This Project is a open source, self hosting bot. it has lots of features u can e
 
 --The Bot is Open Source so u can modify it to ur needs.
 
--- Go over all steps again if u get into a Error.
-
-# WHAT ALL THE COMMANDS DO & INFO
-
-# Discord Bot Commands
+# DISCORD BOT COMMANDS
 
 `kick <username/all>` - Kicks a specific user or all members from the server  
 `ban <username/all>` - Bans a specific user or all members from the server  
@@ -66,12 +60,14 @@ This Project is a open source, self hosting bot. it has lots of features u can e
 `invitelink` - Generates a permanent invite link for the server  
 `deletespecificmessages <keyword> <channel>` - Deletes all messages containing a keyword in a channel  
 `deleteallchannelmessages [channel]` - Deletes all messages in a channel (current or specified)  
+`ping <channel> <minutes>` - Sends @everyone every X minutes in the specified channel  
+`unping <channel>` - Stops the repeating @everyone ping in the specified channel  
+`startdoom <channel>` - Starts a simple Doom-like maze game you can play with buttons  
+`testbot` - Runs an automatic test of most bot commands (results appear in CMD)  
+`renewtoken` - Updates your bot token (CMD only)  
 `refreshservers` - Re-select the current server from the list  
 `clear` - Clears the CMD screen  
-`help` - Shows this command list
-`startdoom <channel>` starts a ,,doom like" experience u can play using buttons (its really shit so dont expect anything mindblowing only use it as a template if u wanna make games in discord.
-`ping <channel> <minutes>` basically @everyone every timespan u choose in the channel
-`unping` stops pinging
+`help` - Shows this command list  
 
 ---
 
@@ -83,3 +79,4 @@ This Project is a open source, self hosting bot. it has lots of features u can e
 - The bot automatically updates itself from GitHub on every launch
 - Your bot token is stored securely in `token.txt` next to the bot file
 - Log files are saved to your Downloads folder when using `stoplog` in CMD mode
+-- Go over all steps again if u get into a Error.
