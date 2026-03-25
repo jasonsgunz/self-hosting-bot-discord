@@ -97,17 +97,17 @@ def launch_bot(path):
     subprocess.Popen(f'start cmd /k ""{python_exe}" "{path}""', shell=True)
 
 if __name__ == "__main__":
-    print("Checking required packages...")
-    if not install_packages():
-        print("Package installation failed. Please install the required packages manually:")
-        print(f"  python -m pip install {' '.join(REQUIRED_PACKAGES)}")
-        input("Press Enter to exit.")
-        sys.exit(1)
-
     bot_path = get_local_path()
 
     if not os.path.exists(bot_path):
-        print("Bot file not found. Downloading from GitHub...")
+        print("Bot file not found. Checking required packages...")
+        if not install_packages():
+            print("Package installation failed. Please install the required packages manually:")
+            print(f"  python -m pip install {' '.join(REQUIRED_PACKAGES)}")
+            input("Press Enter to exit.")
+            sys.exit(1)
+
+        print("Downloading bot from GitHub...")
         new_path = download_to_default()
         if new_path is None:
             input("Press Enter to exit.")
@@ -118,5 +118,4 @@ if __name__ == "__main__":
         print(f"Found bot at: {bot_path}")
 
     check_for_updates(bot_path)
-
     launch_bot(bot_path)
