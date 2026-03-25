@@ -513,16 +513,15 @@ async def run_tests(guild, requester_id):
     created_channels = []
     success_count = 0
     fail_count = 0
-    report_lines = []
+    report_lines = []  # will store (success, msg) tuples
 
     def add_report(success, msg):
         nonlocal success_count, fail_count
         if success:
             success_count += 1
-            report_lines.append(f"✅ {msg}")
         else:
             fail_count += 1
-            report_lines.append(f"❌ {msg}")
+        report_lines.append((success, msg))
 
     try:
         test_channel = await guild.create_text_channel(test_channel_name, reason="Bot test")
@@ -594,16 +593,12 @@ async def run_tests(guild, requester_id):
         ping_task.cancel()
         add_report(True, "ping/unping: ping loop started and stopped")
 
-        # Safely test kick, ban, unban on the server owner (expect permission error)
         owner = guild.owner
         if owner:
             try:
-                # Attempt kick
                 await owner.kick(reason="Test")
                 add_report(False, "kick: unexpected success (should have been blocked)")
-                # If it succeeded, we need to undo? But it shouldn't.
-            except discord.Forbidden as e:
-                # This is expected – can't kick owner
+            except discord.Forbidden:
                 add_report(True, "kick: command logic works (blocked as expected)")
             except Exception as e:
                 add_report(False, f"kick: unexpected error {e}")
@@ -611,13 +606,11 @@ async def run_tests(guild, requester_id):
             try:
                 await owner.ban(reason="Test")
                 add_report(False, "ban: unexpected success")
-            except discord.Forbidden as e:
+            except discord.Forbidden:
                 add_report(True, "ban: command logic works (blocked as expected)")
             except Exception as e:
                 add_report(False, f"ban: unexpected error {e}")
 
-            # Unban test – we can't unban someone who isn't banned; but the command expects a user ID.
-            # We'll attempt to unban a non‑existent user (0) – this should fail with "user not found"
             try:
                 await guild.unban(discord.Object(id=0))
                 add_report(False, "unban: unexpected success")
@@ -625,11 +618,9 @@ async def run_tests(guild, requester_id):
                 add_report(True, "unban: command logic works (user not found error)")
             except Exception as e:
                 add_report(False, f"unban: unexpected error {e}")
-
         else:
             add_report(False, "Could not find server owner for ban/kick test")
 
-        # Doom test
         game = DoomGame(test_channel.id)
         view = DoomView(game)
         msg = await test_channel.send(game.render(), view=view)
@@ -638,16 +629,13 @@ async def run_tests(guild, requester_id):
         await msg.delete()
         add_report(True, "startdoom: game started and ended")
 
-        # Print results to console
         print(Fore.CYAN + "\n=== Test Results ===" + Style.RESET_ALL)
         print(Fore.CYAN + f"Test Done. {success_count} Succeeded / {fail_count} Failed." + Style.RESET_ALL)
-        for line in report_lines:
-            if line.startswith("✅"):
-                print(Fore.GREEN + line + Style.RESET_ALL)
-            elif line.startswith("❌"):
-                print(Fore.RED + line + Style.RESET_ALL)
+        for success, msg in report_lines:
+            if success:
+                print(Fore.GREEN + msg + Style.RESET_ALL)
             else:
-                print(line)
+                print(Fore.RED + msg + Style.RESET_ALL)
 
     except Exception as e:
         print(Fore.RED + f"Test failed: {e}" + Style.RESET_ALL)
