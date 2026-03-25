@@ -8,6 +8,7 @@ from difflib import get_close_matches
 import time
 import random
 from collections import defaultdict
+import datetime
 
 TOKEN_FILE = os.path.join(os.path.dirname(__file__), "token.txt")
 
@@ -87,22 +88,20 @@ CACHE_DURATION = 60
 active_ping_tasks = {}
 active_doom_games = {}
 
-# ----- Updated rate limiter based on Discord API limits -----
 class RateLimiter:
     def __init__(self, initial_concurrency=45):
         self.concurrency = initial_concurrency
-        self.max_concurrency = 50          # just under global 50/sec
+        self.max_concurrency = 50
         self.min_concurrency = 1
         self.rate_limit_count = 0
         self.hardcoded_mode = False
-        self.safe_concurrency = 5           # safe for when rate‑limited
+        self.safe_concurrency = 5
         self.backoff_factor = 0.5
         self.speedup_factor = 1.2
 
     async def execute(self, tasks, task_func):
         if not tasks:
             return []
-        # Reset for this batch
         self.rate_limit_count = 0
         self.hardcoded_mode = False
         concurrency = self.concurrency
@@ -118,7 +117,6 @@ class RateLimiter:
                         if isinstance(res, discord.HTTPException) and res.status == 429:
                             self.rate_limit_count += 1
                             had_rate_limit = True
-                            # Reduce concurrency on the fly
                             concurrency = max(self.min_concurrency, int(concurrency * self.backoff_factor))
                             if self.rate_limit_count >= 3:
                                 self.hardcoded_mode = True
@@ -128,15 +126,12 @@ class RateLimiter:
                             pass
                     else:
                         results.append(res)
-                # If no rate limit in this batch and not in hardcoded mode, increase concurrency
                 if not had_rate_limit and not self.hardcoded_mode:
                     concurrency = min(self.max_concurrency, int(concurrency * self.speedup_factor))
-                # Small delay to smooth out bursts if we're near the limit
                 if len(batch) > concurrency * 0.8:
                     await asyncio.sleep(0.1)
             except Exception as e:
                 print(Fore.RED + f"Batch error: {e}" + Style.RESET_ALL)
-        # Update the main concurrency for future calls (optional)
         self.concurrency = concurrency
         return results
 
@@ -209,7 +204,6 @@ async def ping_loop(channel, minutes):
     except asyncio.CancelledError:
         pass
 
-# --- Enhanced Doom Game ---
 GRID_SIZE = 24
 WALL = '▪'
 FLOOR = '▫'
@@ -488,7 +482,161 @@ class DoomView(discord.ui.View):
         del active_doom_games[self.game.channel_id]
         await interaction.response.send_message("Game ended.", ephemeral=True)
 
-# -----------------------------------------------------------------------------
+class TestConfirmView(discord.ui.View):
+    def __init__(self, ctx):
+        super().__init__(timeout=30)
+        self.ctx = ctx
+        self.confirmed = False
+
+    @discord.ui.button(label='✅ Proceed', style=discord.ButtonStyle.success)
+    async def proceed(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user != self.ctx.author:
+            await interaction.response.send_message("You cannot interact with this.", ephemeral=True)
+            return
+        self.confirmed = True
+        await interaction.message.delete()
+        self.stop()
+
+    @discord.ui.button(label='❌ Quit', style=discord.ButtonStyle.danger)
+    async def quit(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user != self.ctx.author:
+            await interaction.response.send_message("You cannot interact with this.", ephemeral=True)
+            return
+        await interaction.message.delete()
+        self.stop()
+
+async def run_tests(ctx, guild):
+    test_channel_name = f"test-{random.randint(1000,9999)}"
+    test_channel = None
+    original_name = guild.name
+    original_nick = guild.me.nick
+    created_channels = []
+    success_count = 0
+    fail_count = 0
+    report_lines = []
+
+    def add_report(success, msg):
+        nonlocal success_count, fail_count
+        if success:
+            success_count += 1
+            report_lines.append(f"✅ {msg}")
+        else:
+            fail_count += 1
+            report_lines.append(f"❌ {msg}")
+
+    try:
+        test_channel = await guild.create_text_channel(test_channel_name, reason="Bot test")
+        created_channels.append(test_channel)
+        add_report(True, f"Created test channel #{test_channel.name}")
+
+        await test_channel.send("Testing listchannels... (no visible output)")
+        add_report(True, "listchannels: channel list fetched")
+
+        temp_name = f"TestServer-{random.randint(1000,9999)}"
+        await guild.edit(name=temp_name)
+        add_report(True, f"renameserver: changed name to {temp_name}")
+        await guild.edit(name=original_name)
+        add_report(True, "renameserver: restored original name")
+
+        test_nick = "TestBot"
+        await guild.me.edit(nick=test_nick)
+        add_report(True, f"nickname: changed bot nickname to {test_nick}")
+        await guild.me.edit(nick=original_nick)
+        add_report(True, "nickname: restored original nickname")
+
+        overwrite = test_channel.overwrites_for(guild.default_role)
+        overwrite.send_messages = False
+        await test_channel.set_permissions(guild.default_role, overwrite=overwrite)
+        add_report(True, "lockdown: channel locked")
+        overwrite.send_messages = None
+        await test_channel.set_permissions(guild.default_role, overwrite=overwrite)
+        add_report(True, "unlock: channel unlocked")
+
+        test_msg = "Test message from messageall"
+        await test_channel.send(test_msg)
+        add_report(True, "messageall: sent message to test channel")
+
+        await test_channel.send("@everyone test message")
+        add_report(True, "everyone: sent @everyone in test channel")
+
+        class TempButton(discord.ui.View):
+            def __init__(self):
+                super().__init__()
+                self.add_item(discord.ui.Button(label="Test Link", url="https://discord.com"))
+        await test_channel.send("Test button:", view=TempButton())
+        add_report(True, "buttonurl: button sent")
+
+        keyword = "delete_me"
+        for _ in range(3):
+            await test_channel.send(f"Message with {keyword} {random.randint(1,100)}")
+        messages = []
+        async for msg in test_channel.history(limit=50):
+            if keyword in msg.content:
+                messages.append(msg)
+        await rate_limiter.execute(messages, lambda m: m.delete())
+        add_report(True, "deletespecificmessages: deleted messages with keyword")
+
+        messages = []
+        async for msg in test_channel.history(limit=50):
+            messages.append(msg)
+        await rate_limiter.execute(messages, lambda m: m.delete())
+        add_report(True, "deleteallchannelmessages: cleared test channel")
+
+        temp_channel = await guild.create_text_channel(f"temp-{random.randint(1000,9999)}")
+        created_channels.append(temp_channel)
+        add_report(True, "createchannel: created temporary channel")
+
+        invite = await test_channel.create_invite(max_age=60, max_uses=1)
+        add_report(True, f"invitelink: created invite {invite.url}")
+
+        ping_task = asyncio.create_task(ping_loop(test_channel, 0.1))
+        await asyncio.sleep(2)
+        ping_task.cancel()
+        add_report(True, "ping/unping: ping loop started and stopped")
+
+        log_targets[ctx.author.id] = []
+        add_report(True, "log: started logging")
+        test_msg = "Test message for log"
+        await test_channel.send(test_msg)
+        await asyncio.sleep(1)
+        if ctx.author.id in log_targets:
+            log_data = log_targets.pop(ctx.author.id)
+            if len(log_data) > 0:
+                add_report(True, "stoplog: messages logged successfully")
+            else:
+                add_report(False, "stoplog: no messages logged")
+        else:
+            add_report(False, "stoplog: logging failed")
+
+        game = DoomGame(test_channel.id)
+        view = DoomView(game)
+        msg = await test_channel.send(game.render(), view=view)
+        game.message = msg
+        game.view = view
+        await msg.delete()
+        add_report(True, "startdoom: game started and ended")
+
+        await ctx.send(f"**Test Done.** {success_count} Succeeded / {fail_count} Failed.\n" + "\n".join(report_lines), delete_after=30)
+
+    except Exception as e:
+        await ctx.send(f"Test failed: {e}")
+        print(Fore.RED + f"Test error: {e}" + Style.RESET_ALL)
+    finally:
+        for ch in created_channels:
+            try:
+                await ch.delete()
+            except:
+                pass
+        if guild.name != original_name:
+            try:
+                await guild.edit(name=original_name)
+            except:
+                pass
+        if guild.me.nick != original_nick:
+            try:
+                await guild.me.edit(nick=original_nick)
+            except:
+                pass
 
 async def execute_command(cmd, ctx_guild=None, ctx_author=None, message_obj=None):
     if ctx_guild:
@@ -520,6 +668,7 @@ thedestroyer <channel> <message>
 ping <channel> <minutes>
 unping <channel>
 startdoom <channel>
+testbot
 listchannels
 renameserver <new_name>
 deleteallchannels
@@ -536,6 +685,32 @@ refreshservers
 renewtoken
 clear
             """ + Style.RESET_ALL)
+        elif main == "testbot":
+            if not guild:
+                print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
+                return
+            if not ctx_author:
+                print(Fore.RED + "[-] testbot command can only be used in Discord." + Style.RESET_ALL)
+                return
+            view = TestConfirmView(ctx_author)
+            embed = discord.Embed(
+                title="⚠️ Bot Test",
+                description=(
+                    "This will test most bot features (excluding destructive commands).\n\n"
+                    "**Commands NOT tested:** `kick`, `ban`, `unban`, `clear`, `help`, and any CMD‑only commands.\n"
+                    "If you need to verify those, please test them manually.\n\n"
+                    "The test will create temporary channels and briefly rename the server.\n"
+                    "Do you want to proceed?"
+                ),
+                color=discord.Color.orange()
+            )
+            msg = await message_obj.channel.send(embed=embed, view=view)
+            await view.wait()
+            if view.confirmed:
+                await run_tests(ctx_author, guild)
+            else:
+                await msg.delete()
+                await message_obj.channel.send("Test cancelled.", delete_after=5)
         elif main == "listchannels":
             if not guild:
                 print(Fore.RED + "[-] No server selected/available!" + Style.RESET_ALL)
@@ -1094,6 +1269,18 @@ async def on_message(message):
                 pass
         return
     await bot.process_commands(message)
+
+@bot.event
+async def on_guild_join(guild):
+    inviter = "Someone"
+    try:
+        async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.bot_add):
+            if entry.user:
+                inviter = str(entry.user)
+                break
+    except:
+        pass
+    print(Fore.CYAN + f"[+] {inviter} added your Bot to a Server called {guild.name}. Type 'refreshservers' to select it!" + Style.RESET_ALL)
 
 @bot.event
 async def setup_hook():
